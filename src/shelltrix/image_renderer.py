@@ -15,20 +15,53 @@ Fallback : affiche un placeholder [image: nom] si le décodage d'image
 from __future__ import annotations
 
 import base64
+import json
+import os
+import tempfile
 from pathlib import Path
 
-from .config import CONFIG_DIR
+from . import config
 
-_images_dir = CONFIG_DIR / "images"
+_images_dir = config.CONFIG_DIR / "images"
+
+# Plafond par défaut d'un média téléchargé (10 Mo). Surchargeable via la clé
+# `max_image_bytes` de ~/.config/shelltrix/config.json. Au-delà : le
+# téléchargement est refusé (protection contre un homeserver/salon hostile
+# qui remplirait la RAM et le disque du client). L'image ne charge JAMAIS
+# plus de `limit` octets en mémoire.
+DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+# Taille de lecture par chunk : borne la croissance de la mémoire tampon.
+_READ_CHUNK = 64 * 1024
+
+
+def _max_image_bytes() -> int:
+    try:
+        data = json.loads(config.CONFIG_DIR.joinpath("config.json").read_text())
+        value = int(data.get("max_image_bytes", DEFAULT_MAX_IMAGE_BYTES))
+        return value if value > 0 else DEFAULT_MAX_IMAGE_BYTES
+    except (OSError, ValueError, TypeError):
+        return DEFAULT_MAX_IMAGE_BYTES
+
+
+def _ensure_images_dir() -> Path:
+    """Dossier de cache médias en 0700 : les images (contenus privés de
+    salons éventuellement non chiffrés) ne sont pas lisibles par d'autres
+    comptes locaux."""
+    _images_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        _images_dir.chmod(0o700)
+    except OSError:
+        pass
+    return _images_dir
 
 
 def download_image(mxc_url: str, access_token: str, homeserver: str) -> Path | None:
     """Télécharge une image depuis une URL Matrix (mxc://).
 
-    Chemin du fichier téléchargé en cas de succès, None sinon.
+    Chemin du fichier téléchargé en cas de succès, None sinon ou si le média
+    dépasse le plafond configuré (max_image_bytes).
     """
-    import asyncio
-    import urllib.parse
     import urllib.request
 
     # Convertir mxc:// en URL HTTP
@@ -40,8 +73,8 @@ def download_image(mxc_url: str, access_token: str, homeserver: str) -> Path | N
         base_url = f"https://{base_url}"
     download_url = f"{base_url}/_matrix/media/r0/download/{mxc_path}"
 
-    # Créer le dossier de cache
-    _images_dir.mkdir(parents=True, exist_ok=True)
+    # Créer le dossier de cache (0700).
+    _ensure_images_dir()
 
     # Nom de fichier basé sur le hash de l'URL
     url_hash = base64.urlsafe_b64encode(mxc_url.encode()).decode()[:24]
@@ -52,16 +85,54 @@ def download_image(mxc_url: str, access_token: str, homeserver: str) -> Path | N
     if local_path.exists() and local_path.stat().st_size > 0:
         return local_path
 
-    # Télécharger
+    limit = _max_image_bytes()
+    tmp_path: Path | None = None
     try:
         req = urllib.request.Request(download_url)
         req.add_header("Authorization", f"Bearer {access_token}")
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = resp.read()
-        local_path.write_bytes(data)
+        # nosec B310 — l'hôte de download_url est TOUJOURS le homeserver de
+        # l'utilisateur (base_url), jamais la valeur de l'image (limitée à
+        # mxc:// et appendée en suffixe de chemin). Pas de file:/ ni schéma
+        # arbitraire atteignable : seul le homeserver configuré est contacté.
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310
+            # 1) Plafond annoncé par le serveur (Content-Length).
+            content_length = resp.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    if int(content_length) > limit:
+                        return None
+                except ValueError:
+                    pass  # en-tête non numérique : le plafond réel suffira
+            # 2) Plafond effectif : on ne lit jamais plus de `limit` octets.
+            buf = bytearray()
+            while len(buf) <= limit:
+                chunk = resp.read(_READ_CHUNK)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+            if len(buf) > limit:
+                return None
+            data = bytes(buf)
+        if not data:
+            return None
+        # 3) Écriture atomique en 0600 (jamais un fichier partiel lisible).
+        fd, raw_tmp = tempfile.mkstemp(
+            dir=str(_images_dir), prefix=".img-", suffix=".part"
+        )
+        tmp_path = Path(raw_tmp)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            os.chmod(raw_tmp, 0o600)
+            os.replace(raw_tmp, local_path)
+        except OSError:
+            return None
         return local_path
     except Exception:
         return None
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
 
 
 def _guess_extension(path: str) -> str:
