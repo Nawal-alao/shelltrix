@@ -177,7 +177,21 @@ class ShelltrixClient:
             self._sync_task.cancel()
         await self.client.close()
         # Clés de session E2EE protégées au repos après la fermeture.
-        encrypt_store()
+        # Un échec de persistance de la clé est signalé FORTEMENT : on ne
+        # quitte pas l'application en laissant le store en clair sans le dire.
+        from .config import StoreEncryptionError
+
+        try:
+            encrypt_store()
+        except StoreEncryptionError as exc:
+            import sys
+
+            print(
+                f"[shelltrix] WARNING: {exc}\n"
+                "E2EE session keys are NOT encrypted at rest. "
+                "Check that a keyring backend is available.",
+                file=sys.stderr,
+            )
 
     # ------------------------------------------------------------------
     # Actions

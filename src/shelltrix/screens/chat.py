@@ -169,12 +169,14 @@ class ChatScreen(Screen):
             "\n[dim]· · ·  Pick a room from the list to start chatting  · · ·[/dim]"
         )
 
-    def on_unmount(self) -> None:
-        """Arrête le timer de statut pour éviter un leak."""
+    async def on_unmount(self) -> None:
+        """Arrête le timer de statut et ferme le client proprement : la
+        fermeture chiffre le store E2EE au repos (H4)."""
         if self._status_timer is not None:
             self._status_timer.stop()
             self._status_timer = None
         self._cache.close()
+        await self.client.stop()
 
     def _set_composer_enabled(self, enabled: bool) -> None:
         """Verrouille/active la saisie selon qu'un salon est ouvert ou non."""

@@ -26,17 +26,28 @@ KEYRING_SERVICE = "shelltrix"
 # Clé du trousseau contenant le token d'accès. Le token est un secret au même
 # titre qu'un mot de passe : on le conserve dans le trousseau système, jamais
 # en clair sur le disque.
-_USERNAME_ACCESS_TOKEN = "access_token"
+# (nosec B105 : "access_token" est un libellé de compte keyring, pas un secret.)
+# nosec B105
+_USERNAME_ACCESS_TOKEN = "access_token"  # nosec B105
 
 # Clé du trousseau contenant la clé Fernet qui chiffre le store olm au repos.
 _USERNAME_STORE_KEY = "store_key"
 # Marqueur présent uniquement quand le store est chiffré.
 STORE_ENC_MARKER = STORE_DIR / ".shelltrix-encrypted"
+# Repli (0600) si le trousseau système est indisponible : le store reste
+# chiffré au repos, sans jamais laisser de clair silencieux sur le disque.
+STORE_KEY_FILE = CONFIG_DIR / "store.key"
 
 
 class StoreLockedError(RuntimeError):
     """Le store local est chiffré mais aucune clé exploitable n'est
     disponible : l'utilisateur doit fournir sa clé de récupération."""
+
+
+class StoreEncryptionError(RuntimeError):
+    """Le store ne peut PAS être chiffré au repos : ni le trousseau ni le
+    fichier de secours n'acceptent la clé. Remonté fortement pour ne JAMAIS
+    laisser le store en clair sans en informer l'utilisateur."""
 
 
 @dataclass
@@ -150,6 +161,8 @@ def remove_store() -> None:
     """Supprime le store olm local (déconnexion complète de l'appareil)."""
     shutil.rmtree(STORE_DIR, ignore_errors=True)
     RECOVERY_FILE.unlink(missing_ok=True)
+    # Le fichier de secours de la clé accompagne la purge locale.
+    STORE_KEY_FILE.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -162,26 +175,66 @@ def remove_store() -> None:
 # fois toutes les écritures terminées.
 
 
+def _get_store_key() -> str | None:
+    """Clé Fernet du store : trousseau d'abord, fichier de secours ensuite."""
+    try:
+        stored = keyring.get_password(KEYRING_SERVICE, _USERNAME_STORE_KEY)
+        if stored:
+            return stored
+    except Exception:
+        pass  # trousseau indisponible : on tente le fichier de secours
+    try:
+        return STORE_KEY_FILE.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _set_store_key(key: str) -> bool:
+    """Persiste la clé du store : trousseau, sinon fichier de secours 0600.
+
+    Renvoie False si AUCUN support ne l'accepte (l'appelant doit alors lever
+    StoreEncryptionError plutôt que de laisser le store en clair)."""
+    try:
+        keyring.set_password(KEYRING_SERVICE, _USERNAME_STORE_KEY, key)
+        return True
+    except Exception:
+        pass
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        STORE_KEY_FILE.write_text(key)
+        STORE_KEY_FILE.chmod(0o600)
+        return True
+    except OSError:
+        return False
+
+
 def _store_fernet(
     key: str | None = None, *, create: bool = True
 ) -> Fernet | None:
-    """Clé Fernet du store : clé explicite, trousseau, ou génération.
+    """Clé Fernet du store : clé explicite, trousseau/secours, ou génération.
 
     - `key` fourni (clé de récupération) : on l'utilise telle quelle ;
-    - sinon on lit la clé persistée dans le trousseau ;
+    - sinon on lit la clé persistée (trousseau, puis fichier de secours) ;
     - si absente, on en génère une nouvelle uniquement quand `create`
       est vrai (chiffrement à l'arrêt, première création).
     Renvoie None quand aucune clé n'existe et qu'on ne veut pas en créer
-    (restauration : l'UI demandera la clé de récupération)."""
+    (restauration : l'UI demandera la clé de récupération).
+    Lève StoreEncryptionError si une clé nouvelle ne peut être persistée :
+    on préfère échouer fort plutôt que de laisser le store en clair."""
     if key is not None:
         return Fernet(key.encode())
-    stored = keyring.get_password(KEYRING_SERVICE, _USERNAME_STORE_KEY)
+    stored = _get_store_key()
     if stored:
         return Fernet(stored.encode())
     if not create:
         return None
     new_key = Fernet.generate_key()
-    keyring.set_password(KEYRING_SERVICE, _USERNAME_STORE_KEY, new_key.decode())
+    if not _set_store_key(new_key.decode()):
+        raise StoreEncryptionError(
+            "Cannot encrypt the E2EE store at rest: neither the system "
+            "keyring nor the local fallback accepted the key. "
+            "Aborting to avoid leaving session keys in plaintext."
+        )
     return Fernet(new_key)
 
 
@@ -263,13 +316,11 @@ def recovery_verify(secret: str) -> bool:
 def reveal_recovery_secret() -> str:
     """Renvoie la clé de récupération du store actif (crée la clé du
     trousseau si elle n'existe pas encore) et en persiste le vérificateur."""
-    key = keyring.get_password(KEYRING_SERVICE, _USERNAME_STORE_KEY)
+    key = _get_store_key()
     if key is None:
-        key = Fernet.generate_key().decode()
-        try:
-            keyring.set_password(KEYRING_SERVICE, _USERNAME_STORE_KEY, key)
-        except Exception:
-            pass  # sans trousseau, la clé reste montrable en session
+        new_key = Fernet.generate_key().decode()
+        _set_store_key(new_key)  # best effort : la clé reste manipulable en session
+        key = _get_store_key() or new_key
     secret = normalize_recovery_key(key)
     recovery_save(secret)
     return secret
@@ -280,10 +331,7 @@ def regenerate_recovery_secret() -> str:
     L'ancienne clé de récupération devient invalide (le store sera rechiffré
     avec la nouvelle à l'arrêt)."""
     new_key = Fernet.generate_key().decode()
-    try:
-        keyring.set_password(KEYRING_SERVICE, _USERNAME_STORE_KEY, new_key)
-    except Exception:
-        pass  # le trousseau peut être indisponible : la clé reste exploitable
+    _set_store_key(new_key)  # best effort : la clé reste montrable en session
     secret = normalize_recovery_key(new_key)
     recovery_save(secret)
     return secret
@@ -332,14 +380,15 @@ def decrypt_store(recovery_key: str | None = None) -> None:
     STORE_ENC_MARKER.unlink(missing_ok=True)
     if recovery_key is not None:
         # La clé fonctionne : on la ré-enregistre pour les prochains lancements.
-        try:
-            keyring.set_password(KEYRING_SERVICE, _USERNAME_STORE_KEY, key)
-        except Exception:
-            pass
+        _set_store_key(key)
 
 
 def encrypt_store() -> None:
-    """Chiffre le store (appelé après close(), à l'arrêt). Clés E2EE protégées au repos."""
+    """Chiffre le store (appelé après close(), à l'arrêt). Clés E2EE protégées au repos.
+
+    Ne pose le marqueur qu'après TOUTES les écritures. Lève
+    StoreEncryptionError si aucune clé ne peut être persistée — mieux vaut
+    échouer fort que laisser le store en clair sans que l'utilisateur le sache."""
     if not STORE_DIR.exists():
         return
     fernet = _store_fernet()
