@@ -24,10 +24,13 @@ customizable, and fully owned by you — every behavior lives in this repo.
 **Linux / macOS** with **Python >= 3.10** required.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Nawal-alao/shelltrix/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Nawal-alao/shelltrix/c4db4567bd45a04210e765e04f7cb6d29b265ad8/install.sh | sh
 ```
 
 The installer handles `libolm`, `pipx`, and the shelltrix package in one step.
+The source is **pinned to a commit** (no moving branch): see `SHELLTRIX_REF`
+at the top of `install.sh`. Once published, a pinned PyPI package will
+replace this path.
 
 Verify:
 
@@ -51,7 +54,7 @@ shelltrix --version
 #    macOS         brew install pipx
 
 # 3. shelltrix
-pipx install git+https://github.com/Nawal-alao/shelltrix.git
+pipx install "git+https://github.com/Nawal-alao/shelltrix.git@c4db4567bd45a04210e765e04f7cb6d29b265ad8"
 ```
 
 ### Windows

@@ -16,6 +16,17 @@
 set -e
 
 # ---------------------------------------------------------------------------
+# Épinglage de la source (sécurité supply-chain, H1)
+# ---------------------------------------------------------------------------
+# La version installée est **pinnée** à une référence explicite (commit ou
+# tag). Un force-push ou un commit malveillant sur `main` ne peut donc pas
+# être déployé par ce script : la source est vérifiable et rejouable.
+# Surcharge en cas de besoin :   SHELLTRIX_REF=<tag|commit> ./install.sh
+# Une fois le paquet publié sur PyPI, ce bloc est remplacé par une install
+# PyPI épinglée en version (`pipx install shelltrix==x.y.z`).
+SHELLTRIX_REF="${SHELLTRIX_REF:-c4db4567bd45a04210e765e04f7cb6d29b265ad8}"
+
+# ---------------------------------------------------------------------------
 # Couleurs/utilitaires d'affichage (POSIX — pas de bash-ismes)
 # ---------------------------------------------------------------------------
 if [ -t 1 ]; then
@@ -255,15 +266,24 @@ fi
 # ---------------------------------------------------------------------------
 # 5. Installation de shelltrix
 # ---------------------------------------------------------------------------
-step "Installation de shelltrix"
+step "Installation de shelltrix (pinné sur ${SHELLTRIX_REF})"
+
+# Valide la référence avant de la passer à pipx/uv : seule une chaîne
+# hexadécimale (SHA de commit, au moins 7 caractères) est acceptée.
+case "$SHELLTRIX_REF" in
+    ''|*[!0-9a-fA-F]*) die "Référence SHELLTRIX_REF invalide : '$SHELLTRIX_REF' (SHA de commit hexadécimal requis)." ;;
+esac
+[ "${#SHELLTRIX_REF}" -lt 7 ] && die "Référence SHELLTRIX_REF trop courte : '$SHELLTRIX_REF'"
 
 install_shelltrix() {
-    # NOTE publication PyPI : remplacer le git+https par `pipx install shelltrix`
-    # (ou `uv tool install shelltrix`) une fois le paquet publié.
+    # NOTE publication PyPI : remplacer le git+https pinné par
+    # `pipx install shelltrix==x.y.z` (ou `uv tool install shelltrix==x.y.z`)
+    # une fois le paquet publié.
+    SHELLTRIX_SOURCE="git+https://github.com/Nawal-alao/shelltrix.git@${SHELLTRIX_REF}"
     if [ "$INSTALLER" = "uv" ]; then
-        uv tool install "git+https://github.com/Nawal-alao/shelltrix.git"
+        uv tool install "$SHELLTRIX_SOURCE"
     else
-        pipx install "git+https://github.com/Nawal-alao/shelltrix.git"
+        pipx install "$SHELLTRIX_SOURCE"
     fi
 }
 
