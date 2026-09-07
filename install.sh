@@ -24,7 +24,7 @@ set -e
 # Surcharge en cas de besoin :   SHELLTRIX_REF=<tag|commit> ./install.sh
 # Une fois le paquet publié sur PyPI, ce bloc est remplacé par une install
 # PyPI épinglée en version (`pipx install shelltrix==x.y.z`).
-SHELLTRIX_REF="${SHELLTRIX_REF:-c4db4567bd45a04210e765e04f7cb6d29b265ad8}"
+SHELLTRIX_REF="${SHELLTRIX_REF:-929e7e96b2f9d2824b0bdc12e476e934380424d5}"
 
 # ---------------------------------------------------------------------------
 # Couleurs/utilitaires d'affichage (POSIX — pas de bash-ismes)
