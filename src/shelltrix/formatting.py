@@ -154,7 +154,9 @@ _URL_RE = re.compile(r"https?://[^\s<>\"']+|www\.[^\s<>\"']+")
 
 
 def _sender_color(sender: str) -> str:
-    digest = hashlib.md5(sender.encode("utf-8")).hexdigest()
+    # usedforsecurity=False : le hash sert UNIQUEMENT à dériver une couleur
+    # d'affichage stable par expéditeur, il n'a aucun rôle cryptographique.
+    digest = hashlib.md5(sender.encode("utf-8"), usedforsecurity=False).hexdigest()
     return SENDER_COLORS[int(digest[:8], 16) % len(SENDER_COLORS)]
 
 
