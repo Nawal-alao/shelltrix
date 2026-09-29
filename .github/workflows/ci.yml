@@ -15,6 +15,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Historique complet : les tests de supply-chain (H1) vérifient que
+          # la référence pinnée existe et porte bien les correctifs de
+          # durcissement. Inopérant sur un clone superficiel.
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5

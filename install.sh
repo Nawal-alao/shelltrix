@@ -24,7 +24,13 @@ set -e
 # Surcharge en cas de besoin :   SHELLTRIX_REF=<tag|commit> ./install.sh
 # Une fois le paquet publié sur PyPI, ce bloc est remplacé par une install
 # PyPI épinglée en version (`pipx install shelltrix==x.y.z`).
-SHELLTRIX_REF="${SHELLTRIX_REF:-929e7e96b2f9d2824b0bdc12e476e934380424d5}"
+# INVARIANT : la valeur ci-dessous doit pointer sur un commit qui porte les
+# correctifs de durcissement (H1-H4) ET dont le propre `install.sh` épingle
+# lui aussi un commit porteur de ces correctifs. En effet le README sert ce
+# script depuis cette valeur : si elle désignait un commit antérieur au
+# durcissement, `curl | sh` installerait du code non durci.
+# Verrouillé par `test_pinned_ref_installs_hardened_code`.
+SHELLTRIX_REF="${SHELLTRIX_REF:-7b9d401baa59af47f30a6925f57bb1a80364a84e}"
 
 # ---------------------------------------------------------------------------
 # Couleurs/utilitaires d'affichage (POSIX — pas de bash-ismes)

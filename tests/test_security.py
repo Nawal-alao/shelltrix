@@ -534,6 +534,54 @@ class TestSupplyChainInstall:
         assert f"@{ref}" in readme  # install manuelle pipx pinnée
         assert "main/install.sh" not in readme
 
+    @staticmethod
+    def _show(ref: str, path: str) -> str | None:
+        """Contenu de `path` au commit `ref`, ou None si indisponible."""
+        proc = subprocess.run(
+            ["git", "show", f"{ref}:{path}"],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            capture_output=True,
+            text=True,
+        )
+        return proc.stdout if proc.returncode == 0 else None
+
+    def test_pinned_ref_installs_hardened_code(self) -> None:
+        """Le chemin `curl .../<ref>/install.sh | sh` doit installer du code durci.
+
+        Pinner une source ne suffit pas : le README sert `install.sh` *depuis*
+        la référence pinnée, et ce script-là épingle à son tour une autre
+        référence. Si cette seconde référence est antérieure au durcissement,
+        la commande documentée installe du code vulnérable alors que tout
+        paraît pinné. On verrouille donc les deux maillons de la chaîne.
+        """
+        ref = self._pinned_ref()
+
+        # Maillon 1 : le code directement pinné est durci (marqueur H2).
+        code = self._show(ref, "src/shelltrix/cache.py")
+        if code is None:
+            pytest.skip(f"historique indisponible pour {ref} (clone superficiel ?)")
+        assert "MAX_CACHE_BYTES" in code, (
+            f"SHELLTRIX_REF={ref} pointe sur un commit antérieur au "
+            "durcissement H2 : l'install pinne du code non durci."
+        )
+
+        # Maillon 2 : le script servi depuis `ref` épingle lui aussi du code durci.
+        served = self._show(ref, "install.sh")
+        assert served is not None, f"install.sh introuvable au commit {ref}"
+        m = re.search(
+            r'SHELLTRIX_REF="\$\{SHELLTRIX_REF:-([0-9a-f]{40})\}"', served
+        )
+        assert m, f"install.sh@{ref} ne pinnne pas de SHA"
+        inner = m.group(1)
+
+        inner_code = self._show(inner, "src/shelltrix/cache.py")
+        if inner_code is None:
+            pytest.skip(f"historique indisponible pour {inner}")
+        assert "MAX_CACHE_BYTES" in inner_code, (
+            f"install.sh@{ref} épingle {inner}, commit antérieur au durcissement : "
+            "`curl | sh` depuis le README installerait du code non durci."
+        )
+
 
 # ---------------------------------------------------------------------------
 # H2 — Cache : répertoire 0700, plafond de stockage + garde par salon
