@@ -8,7 +8,7 @@ il est noté ici et traité séparément — jamais corrigé pendant le refactor
 
 ### 1. Couleurs markup `ACCENT` / `DANGER` (globals mutables)
 À l'origine : `app.py` définit `ACCENT` et `DANGER`, rebondus à la volée par
-`_apply_theme_globals()` (appel à l'import du module, dans `MatuiApp.__init__`
+`_apply_theme_globals()` (appel à l'import du module, dans `ShelltrixApp.__init__`
 et à chaque `cycle_theme`). Leurs consommateurs vivaient dans le même module :
 une réaffectation `global ACCENT` était donc vue partout.
 
@@ -25,7 +25,7 @@ circulaires `screens|dialogs → app`.
 chaque bascule de thème → aucune valeur observable ne change.
 
 `ACCENT` / `DANGER` / `_apply_theme_globals()` restent dans `app.py` : ils
-n'ont plus de consommateur mais `MatuiApp` continue de les maintenir.
+n'ont plus de consommateur mais `ShelltrixApp` continue de les maintenir.
 
 ### 2. `_URL_RE` (regex d'URL) — retiré de la liste initiale
 `_URL_RE` est utilisé par `ChatScreen._handle_incoming_message`. Il n'est pas
@@ -46,13 +46,49 @@ tout retour vers `app.py`. Une fois chaque module extrait (étapes 5, 6, 11,
 que des modules "aval" (screens/, dialogs/, config/, matrix_client/) —
 aucun cycle.
 
+### 5. `MatuiApp` → `ShelltrixApp`
+Le nom de la classe a suivi le projet : les sections 1 et 3 parlaient encore
+de `MatuiApp`, la classe s'appelle `ShelltrixApp` (`src/shelltrix/app.py`).
+Aucun code ne référence l'ancien nom.
+
+### 6. Timeline : `RichLog` → widgets
+Ce n'est pas une adaptation mécanique, c'est un changement de modèle de rendu
+qu'il a fallu faire pour les messages longs, les réponses et les réactions :
+un `RichLog` n'affiche que du texte déjà rendu, donc il ne peut ni se
+replier, ni porter une reaction par message, ni devenir la cible d'un
+`scroll_to_widget`.
+
+La timeline est désormais un `VerticalScroll` (`#timeline`) rempli de
+`MessageView` (`widgets.py`), un widget par message. Conséquences à
+connaître :
+
+- toute recherche d'un élément de la timeline passe par
+  `query_one(..., MessageView)`, pas par une ligne de texte ;
+- `RichLog` n'est plus importé dans `screens/chat.py` ;
+- le repli est mesuré sur les lignes *rendues* (largeur réelle du panneau,
+  markup retiré), pas sur les `\n` de la source — d'où `timeline_width` et
+  son repli `_FALLBACK_TIMELINE_WIDTH` avant le premier layout ;
+- un message monté n'est pas encore dimensionné : les scrolls précis
+  (`open_message`, repositionnement après un prepend d'historique) passent par
+  `call_after_refresh`.
+
 ## Structure finale (src/shelltrix/)
-- `app.py` : `MatuiApp`, `_apply_theme_globals`, globals `ACCENT`/`DANGER`
+- `app.py` : `ShelltrixApp`, `_apply_theme_globals`, globals `ACCENT`/`DANGER`
   (maintenus mais sans consommateur), `run()`.
-- `formatting.py`, `sidebar.py`, `widgets.py` : helpers bas niveau, ne
-  dépendent que de `themes` (+ stdlib/rich).
-- `screens/{login,chat,splash}.py`, `dialogs/{command_palette,join_room,
-  recovery,store_unlock,sas,invite}.py` : écrans et dialogues.
+- `config.py` : chemins, préférences, chiffrement du store (Fernet), clé de
+  récupération, marqueur de premier lancement.
+- `accounts.py` : multi-comptes (`accounts.json` + tokens dans le keyring).
+- `matrix_client.py` : wrapper `matrix-nio` (login, sync, envoi, SAS,
+  réactions, upload) et le premier sync non bloquant.
+- `cache.py` : cache SQLite local des messages, indexé par compte et salon.
+- `formatting.py` : blocs de timeline, dates, réponses, réactions, markdown,
+  regex URL.
+- `sidebar.py` : panneaux ROOM / SESSION, cadres et branches d'arbre.
+- `widgets.py` : `MessageView` (corps repliable, réactions), bouton d'envoi.
+- `themes.py`, `image_renderer.py`, `notifications.py` : tokens de couleur,
+  rendu d'images, notifications desktop.
+- `screens/{login,chat,splash,account_picker}.py`, `dialogs/{command_palette,
+  join_room,search,recovery,store_unlock,sas,invite}.py` : écrans et dialogues.
 
 ## Bugs repérés pendant le refactor (à traiter séparément)
 - (aucun pour l'instant)
