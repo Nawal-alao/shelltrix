@@ -2,7 +2,7 @@
 expéditeur, séparateurs temporels et de date, réponses, réactions).
 
 Cible la logique pure de `shelltrix.formatting` (`format_timeline_blocks` /
-`format_timeline_entries`, replies, dates), sans état Textual.
+`format_timeline_entries`, replies, dates, réactions), sans état Textual.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from datetime import date, timedelta
 
 from shelltrix.formatting import (
     TIME_GAP_SEPARATOR_MS,
+    annotation_of,
     TimelineContext,
     TimelineEntry,
     body_mentions_user,
@@ -21,6 +22,8 @@ from shelltrix.formatting import (
     highlight_mentions,
     interval_time_gap,
     needs_date_separator,
+    reaction_counts,
+    reaction_summary,
     reply_fallback,
     reply_quote_line,
     reply_target_of,
@@ -382,3 +385,86 @@ class TestDateSeparators:
     def test_same_day_no_separator(self) -> None:
         base = 1_700_000_000_000
         assert needs_date_separator(base, base + 1000) is False
+
+
+class TestReactionSummary:
+    def test_empty(self) -> None:
+        assert reaction_summary({}) == ""
+
+    def test_single_reaction_shows_count(self) -> None:
+        assert "1" in reaction_summary({"👍": 1})
+
+    def test_sorted_by_count_desc(self) -> None:
+        out = reaction_summary({"a": 1, "b": 5, "c": 3})
+        assert out.index("b") < out.index("c") < out.index("a")
+
+    def test_ties_are_stable(self) -> None:
+        out = reaction_summary({"b": 2, "a": 2})
+        assert out.index("a") < out.index("b")
+
+    def test_keys_are_escaped(self) -> None:
+        out = reaction_summary({"[bold]x": 2})
+        assert "\\[bold]x" in out
+        assert "[bold]" not in out.replace("\\[", "")
+
+
+class TestAnnotationOf:
+    def test_reads_target_and_key(self) -> None:
+        content = {
+            "m.relates_to": {
+                "rel_type": "m.annotation",
+                "event_id": "$m1",
+                "key": "👍",
+            }
+        }
+        assert annotation_of(content) == ("$m1", "👍")
+
+    def test_reply_is_not_an_annotation(self) -> None:
+        """Réponses et réactions partagent `m.relates_to` : seul rel_type sépare."""
+        content = {
+            "m.relates_to": {
+                "rel_type": "m.in_reply_to",
+                "event_id": "$m1",
+            }
+        }
+        assert annotation_of(content) == ("", "")
+
+    def test_edit_is_not_an_annotation(self) -> None:
+        content = {
+            "m.relates_to": {
+                "rel_type": "m.replace",
+                "event_id": "$m1",
+                "key": "* nouveau texte",
+            }
+        }
+        assert annotation_of(content) == ("", "")
+
+    def test_plain_message(self) -> None:
+        assert annotation_of({"msgtype": "m.text", "body": "coucou"}) == ("", "")
+
+    def test_malformed_annotation_is_ignored(self) -> None:
+        base = {"rel_type": "m.annotation"}
+        assert annotation_of({"m.relates_to": {**base, "key": "👍"}}) == ("", "")
+        assert annotation_of({"m.relates_to": {**base, "event_id": "$m1"}}) == ("", "")
+        assert annotation_of({"m.relates_to": {**base, "event_id": 7, "key": 3}}) == ("", "")
+        assert annotation_of({"m.relates_to": "pas un dict"}) == ("", "")
+        assert annotation_of({}) == ("", "")
+
+
+class TestReactionCounts:
+    def test_counts_per_key(self) -> None:
+        assert reaction_counts({"@a:hs": "👍", "@b:hs": "👍", "@c:hs": "❤️"}) == {
+            "👍": 2,
+            "❤️": 1,
+        }
+
+    def test_empty(self) -> None:
+        assert reaction_counts({}) == {}
+
+    def test_one_sender_never_counts_twice(self) -> None:
+        """La spec n'autorise qu'une réaction par auteur et par message."""
+        assert reaction_counts({"@a:hs": "👍"}) == {"👍": 1}
+
+    def test_change_of_mind_replaces_the_key(self) -> None:
+        by_sender = {"@a:hs": "❤️", "@b:hs": "👍"}
+        assert reaction_counts(by_sender) == {"❤️": 1, "👍": 1}

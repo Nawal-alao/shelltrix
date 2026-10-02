@@ -280,6 +280,62 @@ def strip_reply_fallback(body: str, author: str) -> str:
     return body.removeprefix(f"<{author}> ")
 
 
+# ---------------------------------------------------------------------------
+# Réactions
+# ---------------------------------------------------------------------------
+
+
+def annotation_of(content: Mapping[str, object]) -> tuple[str, str]:
+    """`(event_id, clé)` d'une annotation `m.reaction`, ou `("", "")`.
+
+    Réponses et réactions partagent la même clé `m.relates_to` : seul `rel_type`
+    les sépare. Confondre les deux ferait afficher une citation comme une
+    réaction, et surtout ferait passer une réaction pour un message vide —
+    nio classe une annotation en `RoomMessageText` au corps vide.
+    """
+    relates = content.get("m.relates_to")
+    if not isinstance(relates, Mapping) or relates.get("rel_type") != "m.annotation":
+        return "", ""
+    target = relates.get("event_id")
+    key = relates.get("key")
+    if isinstance(target, str) and target and isinstance(key, str) and key:
+        return target, key
+    return "", ""
+
+
+def reaction_counts(by_sender: Mapping[str, str]) -> dict[str, int]:
+    """Compte les réactions par emoji à partir d'un index `sender -> clé`.
+
+    On stocke l'AUTEUR et non un compteur incrémental parce que la spec
+    n'autorise qu'une réaction par utilisateur et par message : changer d'emoji
+    remplace l'ancien. Un simple `count += 1` cumulerait les deux et afficherait
+    « 👍 2 » pour une personne qui a juste changé d'avis.
+    """
+    counts: dict[str, int] = {}
+    for key in by_sender.values():
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def reaction_summary(counts: Mapping[str, int]) -> str:
+    """Rend des réactions agrégées : `👍 3  ❤️ 1`.
+
+    Le compte est TOUJOURS affiché, y compris pour 1 : une ligne
+    `👍 3  ❤️` se lit comme si la seconde réaction n'avait personne, alors
+    que `👍 3  ❤️ 1` donne le nombre réel sans avoir à le deviner.
+
+    Ordre déterministe (tri par count décroissant puis clé) pour que deux
+    rendus successifs ne sautent pas d'une ligne à l'autre. Les clés sont
+    échappées : elles viennent du réseau.
+    """
+    if not counts:
+        return ""
+    parts = []
+    for key, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        parts.append(f"[{themes.accent()}]{escape(key)} {n}[/{themes.accent()}]")
+    return "  ".join(parts)
+
+
 def format_timeline_blocks(
     entries: list[TimelineEntry],
     ctx: TimelineContext,
