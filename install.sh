@@ -46,7 +46,7 @@ fi
 # Pinning the source (supply-chain security, H1)
 # ---------------------------------------------------------------------------
 # The installed version is **pinned** to an immutable ref: the release tag
-# `v1.0.1`, set on the last commit of the series. A force-push or a malicious
+# `v1.0.2`, set on the last commit of the series. A force-push or a malicious
 # commit on `main` can therefore not be deployed by this script: the source
 # is verifiable and replayable, and it is *the last published commit* — not a
 # commit one version behind.
@@ -58,7 +58,7 @@ fi
 # Once the package is published on PyPI, this block is replaced by a
 # version-pinned PyPI install (`pipx install shelltrix==x.y.z`).
 # Locked down by `test_pinned_ref_installs_hardened_code`.
-SHELLTRIX_REF="${SHELLTRIX_REF:-v1.0.1}"
+SHELLTRIX_REF="${SHELLTRIX_REF:-v1.0.2}"
 
 # ---------------------------------------------------------------------------
 # Display colors/utilities (POSIX — no bashisms)
