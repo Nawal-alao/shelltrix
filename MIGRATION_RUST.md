@@ -14,20 +14,21 @@ fonctionnelle pendant toute la migration (côté à côte sur deux branches).
 
 | Composant | Module Python | Rôle |
 |---|---|---|
-| Bootstrap | `shelltrix/app.py` | MatuiApp, routage splash → login → chat, boucle d'app |
+| Bootstrap | `shelltrix/app.py` | ShelltrixApp, routage splash → login → chat, boucle d'app |
 | Config | `shelltrix/config.py` | chemins, clés `config.json`, chiffrement du store (Fernet), clé de récupération |
 | Comptes multi | `shelltrix/accounts.py` | `accounts.json` + tokens dans le keyring système |
-| Couche Matrix | `shelltrix/matrix_client.py` | wrapper sur `matrix-nio` : login, sync, envoi, SAS, upload |
+| Couche Matrix | `shelltrix/matrix_client.py` | wrapper sur `matrix-nio` : login, sync (1er sync non bloquant), envoi, réponses, réactions, SAS, upload |
+| Cache local | `shelltrix/cache.py` | messages persistés par compte et salon, indexés pour la recherche |
 | Écrans | `screens/{login,splash,chat,account_picker}.py` | UI textuelle |
-| Dialogues | `dialogs/{invite,join_room,recovery,store_unlock,sas,command_palette}.py` | dialogs modaux |
-| Sidebar | `shelltrix/sidebar.py` | panneau contextuel droit |
-| Formatage | `shelltrix/formatting.py` | couleurs par émetteur, markdown inline, regex URL |
+| Dialogues | `dialogs/{invite,join_room,search,recovery,store_unlock,sas,command_palette}.py` | dialogs modaux |
+| Sidebar | `shelltrix/sidebar.py` | panneau contextuel droit (cadres, branches d'arbre) |
+| Formatage | `shelltrix/formatting.py` | blocs de timeline, dates, réponses, réactions, markdown inline, regex URL |
 | Thèmes | `shelltrix/themes.py` | tokens de couleur (opencode / matrix_green) |
 | Images | `shelltrix/image_renderer.py` | Kitty / Sixel / placeholder |
 | Notifications | `shelltrix/notifications.py` | `notify-send` |
-| Widgets | `shelltrix/widgets.py` | helpers UI (figlet-like banner, …) |
+| Widgets | `shelltrix/widgets.py` | `MessageView` (message repliable + réactions), helpers UI |
 
-~3 900 lignes de Python / 7 modules de tests.
+~6 000 lignes de Python / 13 modules de tests.
 
 ---
 
@@ -126,7 +127,7 @@ débloque la suite.
 - **Sortie :** on se connecte, on voit la liste des salons, triée (unread en premier).
 
 ### Phase 2 — Timeline + composer + envoi
-- `ui/chat.rs` : timeline (`Paragraph`/liste virtuelle) avec timestamps, couleurs par émetteur (`formatting.rs`), messages persistés localement.
+- `ui/chat.rs` : timeline (`Paragraph`/liste virtuelle) avec timestamps, couleurs par émetteur (`formatting.rs`), messages persistés localement. Chaque message est son propre bloc repliable (le Rust n'a pas besoin de `MessageView` : la liste virtuelle gère le pli, mais le comportement doit être identique).
 - `ui/widgets/textarea.rs` : zone de saisie multi-ligne (copie du composant Textual).
 - Envoi `m.text` ; affichage des erreurs d'envoi (appareils non vérifiés → blocage + avertissement, **même politique que Python**).
 - **Sortie :** on écrit dans une salle, on voit le message (le mien + celui des autres en direct via sync).
@@ -180,8 +181,16 @@ débloque la suite.
 | Fonctionnalité | Python actuel | Rust cible |
 |---|---|---|
 | Login + sync loop | ✅ | ✅ |
+| Démarrage non bloquant (1er sync en tâche de fond) | ✅ | ✅ |
 | Room list triée (unread) | ✅ | ✅ |
 | Timeline live + envoi | ✅ | ✅ |
+| Timeline en widgets (repli des messages longs) | ✅ | ✅ (liste virtuelle) |
+| Séparateurs de jour + gouttière d'heure | ✅ | ✅ |
+| Mentions directes + badge `@` | ✅ | ✅ |
+| Historique serveur / scrollback | ✅ | ✅ |
+| Cache local + recherche (`Ctrl+F`) | ✅ | ✅ (SQLite) |
+| Réponses (`m.in_reply_to`) | ✅ | ✅ |
+| Réactions (live + depuis l'historique) | ✅ | ✅ |
 | E2EE (déchiffrement/envoi chiffré) | ✅ | ✅ |
 | Chiffrement du store au repos | ✅ (Fernet) | ✅ (chacha20poly1305) |
 | Clé de récupération `/recovery` | ✅ | ✅ |
@@ -190,12 +199,12 @@ débloque la suite.
 | Vérif SAS emoji (humain) | ✅ | ✅ |
 | Cross-signing | ❌ (impossible via nio) | ✅ (bonus) |
 | Commandes slash + help | ✅ | ✅ |
-| Palette `Ctrl+P` | ✅ | ✅ |
+| Palette `Ctrl+P` (+ section Suggested, barre de titre) | ✅ | ✅ |
 | Autocomplétion `/` et `@` | ✅ | ✅ |
-| Splash animé | ✅ | ✅ |
+| Splash animé (1er lancement seulement) | ✅ | ✅ |
 | Thèmes (2) + bascule | ✅ | ✅ |
-| Sidebar contexte | ✅ | ✅ |
-| Images inline (Kitty/Sixel) | ✅ | ✅ |
+| Sidebar contexte (cadres, arbre) | ✅ | ✅ |
+| Images inline (demi-blocs Unicode) | ✅ | ✅ (Sixel / Kitty) |
 | Notifications desktop | ✅ | ✅ |
 | Multi-comptes | ✅ | ✅ |
 
