@@ -1,6 +1,7 @@
 # ADR 0001 — Move the core to Rust, keep Textual
 
-- **Status**: Accepted (one blocking question open, see *Open question*)
+- **Status**: Accepted. Packaging resolved on 2026-10-02 (see *Resolved —
+  packaging*); the network and E2EE slices are not started.
 - **Date**: 2026-10-02
 - **Scope**: architecture. No code written yet.
 
@@ -83,18 +84,50 @@ The app version and the core version are independent. The app ships a pinned,
 known-good core build; `shelltrix 1.4.0` must work whatever the core's own
 version. The core may iterate rapidly through its own 0.x during the migration.
 
-## Open question — blocking, decide before writing core code
+## Resolved — packaging (was the blocking open question)
 
 As soon as Rust is in the install path, `curl … | sh` breaks for anyone
-without cargo. Two options:
+without cargo. **Resolved by measurement, on 2026-10-02.**
 
-1. Prebuilt wheels for every platform via `cibuildwheel` — significant CI work,
-   one artifact per platform, the clean answer.
-2. Build on the user's machine — breaks the one-line install, the project's
-   primary distribution channel.
+The extension is built `abi3-py310`: **one wheel serves CPython 3.10 through
+3.14**. The wheel matrix stays at one entry per platform instead of one per
+(platform, minor), which is what made the PyPI option look expensive. Verified
+end to end — `maturin build`, wheel install, `import`, call — and the job
+`rust-core` in CI rebuilds it on every push.
 
-This is the project's biggest friction point and must be settled *before* the
-first line of core code, not at release time.
+So the answer is option 1, prebuilt wheels on PyPI, and `install.sh` does not
+change: it already installs through `pipx`/`uv tool install`, which resolves
+the optional `shelltrix-core` dependency like any other. The user never needs
+cargo.
+
+`Cargo.lock` is committed, so a wheel is built from pinned dependency versions
+and a release stays reproducible.
+
+Two things this leaves open, both smaller:
+
+- Publishing wheels for the other platforms (macOS, Windows). The Linux wheel
+  is proven; the release workflow does not exist yet.
+- Until the core is the default, `shelltrix-core` is *not* installed by
+  `install.sh`. The opt-in path is `pipx install shelltrix-core` plus
+  `SHELLTRIX_CORE=rust`.
+
+## Progress
+
+Migrated so far, each step verified:
+
+| Step | State |
+|---|---|
+| Packaging question | resolved, abi3 wheel proven in CI |
+| Seam (`shelltrix._core`), backend selection, parity tests | done, 260 tests |
+| `/sync` parsing → timeline messages | done, 30x measured |
+| Network + event loop | **not started** |
+| E2EE (olm store, key management) | **not started** |
+| Rust as the default backend | not started |
+
+The seam is deliberately **not** wired into `matrix_client.py`: the client
+consumes events through matrix-nio callbacks, while a matrix-sdk core emits a
+stream. Bridging the two is a change of architecture, not a substitution of a
+function call, and is left as one reviewed step.
 
 ## Consequences
 
