@@ -85,6 +85,29 @@ echo "alias shelltrix='$(pwd)/.venv/bin/shelltrix'" >> ~/.bashrc
 ln -s "$(pwd)/.venv/bin/shelltrix" ~/.local/bin/shelltrix
 ```
 
+### Cutting a release
+
+The version lives in six places, so it is bumped in one command:
+
+```bash
+./bump.sh 1.0.2          # rewrite pyproject, __init__, install.sh and README
+./bump.sh 1.0.2 --tag    # ... and create the annotated tag
+```
+
+The script anchors on the *previous* version and fails loudly if an expected
+occurrence is missing, refuses to bump without a `## [1.0.2]` changelog
+section, and runs the supply-chain tests before tagging. A release whose pin
+disagrees with the package version cannot pass CI: see
+`test_pinned_ref_matches_the_declared_version`.
+
+Then review, and push **the tag first**:
+
+```bash
+git commit -am "chore(release): bump version to 1.0.2"
+git push origin v1.0.2
+git push origin main
+```
+
 ---
 
 ## Shortcuts

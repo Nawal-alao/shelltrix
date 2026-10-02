@@ -522,6 +522,28 @@ class TestSupplyChainInstall:
         assert f"@{ref}" in readme  # pinned manual pipx install
         assert "main/install.sh" not in readme
 
+    def test_pinned_ref_matches_the_declared_version(self) -> None:
+        """The pin and the package version must designate the same release.
+
+        Nothing else links `install.sh` to `pyproject.toml`: the other checks
+        in this class only compare the installer with the README. A release
+        cut with a forgotten pin therefore passes every test, then quietly
+        installs the *previous* tag. Bumping the version has to move the pin.
+        """
+        root = self.ROOT
+        m = re.search(r'^version = "([^"]+)"', (root / "pyproject.toml").read_text(), re.M)
+        assert m, "no `version = \"...\"` found in pyproject.toml"
+        version = m.group(1)
+        assert self._pinned_ref() == f"v{version}", (
+            f"install.sh pins {self._pinned_ref()} but pyproject.toml declares "
+            f"{version}: the installer would serve another release. "
+            "Run ./bump.sh to move both."
+        )
+        init = (root / "src" / "shelltrix" / "__init__.py").read_text()
+        assert f'__version__ = "{version}"' in init, (
+            f'__init__.__version__ does not match pyproject.toml ({version})'
+        )
+
     @staticmethod
     def _show(ref: str, path: str) -> str | None:
         """Content of `path` at commit `ref`, or None if unavailable."""
