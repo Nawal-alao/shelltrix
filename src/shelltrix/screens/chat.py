@@ -7,7 +7,7 @@ import re
 import time
 import webbrowser
 
-from nio import MatrixRoom, RoomMessageImage, RoomMessageText
+from ..events import ImageEvent, MessageEvent, Room
 from rich.markup import escape
 from textual import events
 from textual.app import ComposeResult
@@ -97,8 +97,8 @@ class ChatScreen(Screen):
         self.active_room_id: str | None = None
         self.unread: dict[str, int] = {}
         # Local SQLite cache: persists timeline messages per room, scoped
-        # to the current account (self.client.client.user_id).
-        self._cache = MessageCache(self.client.client.user_id)
+        # to the current account (self.client.user_id).
+        self._cache = MessageCache(self.client.user_id)
         # Unread direct mentions per room (message @us, unread): used to show
         # a distinct indicator ('@') in the room list.
         self.mentions: dict[str, int] = {}
@@ -292,7 +292,7 @@ class ChatScreen(Screen):
 
     async def _handle_typing(self, room_id: str, user_ids: list[str]) -> None:
         """Handles a typing event (server-authoritative, full list)."""
-        own_id = self.client.client.user_id
+        own_id = self.client.user_id
         typing = {uid for uid in user_ids if uid != own_id}
         self._typing_users[room_id] = typing
         self._typing_last_seen[room_id] = time.monotonic()
@@ -357,7 +357,7 @@ class ChatScreen(Screen):
         self.query_one("#sb-room", Static).update(
             _sidebar_room_markup(room, own_id, inner)
         )
-        nb = getattr(self.client.client, "next_batch", None)
+        nb = self.client.next_batch
         nb = nb if isinstance(nb, str) else None
         now = time.time()
         if nb:
@@ -625,14 +625,14 @@ class ChatScreen(Screen):
             if not self.active_room_id or self.active_room_id != room_id:
                 return
             token = self._history_token.get(room_id)
-            resp = await self.client.room_messages(room_id, start=token, limit=40)
-            if resp is None or not getattr(resp, "chunk", None):
-                if resp is not None:
+            page = await self.client.room_messages(room_id, start=token, limit=40)
+            if page is None or not page.events:
+                if page is not None:
                     self._history_token[room_id] = _HISTORY_END
                 return
             timeline = self.query_one("#timeline", VerticalScroll)
             prev_scroll = timeline.scroll_y
-            events = list(resp.chunk)
+            events = list(page.events)
             # Reactions travel in the same page as the messages: we
             # harvest them before building the entries, otherwise the
             # history would display without any counter.
@@ -655,7 +655,7 @@ class ChatScreen(Screen):
                 lambda: self._restore_scroll_after_prepend(timeline, prev_scroll, added_ids)
             )
             self._history_token[room_id] = (
-                getattr(resp, "end", None) or _HISTORY_END
+                page.end or _HISTORY_END
             )
         finally:
             self._loading_history.discard(room_id)
@@ -687,31 +687,27 @@ class ChatScreen(Screen):
         )
 
     def _entries_from_events(
-        self, room_id: str, events: list
+        self, room_id: str, events: list[MessageEvent | ImageEvent]
     ) -> list[TimelineEntry]:
-        """Converts nio history events into TimelineEntry.
+        """Converts normalized history events into TimelineEntry.
 
         Handles text/emote/notice messages and images (placeholder).
         Returns the entries in ascending chronological order (oldest
         first), ready to be prepended.
         """
-        own_id = self.client.client.user_id
-        me = self.client.client.user_id
-        from nio import (
-            RoomMessageImage,
-            RoomMessageText,
-        )
+        own_id = self.client.user_id
+        me = self.client.user_id
 
         out: list[TimelineEntry] = []
         for ev in events:
-            # An `m.reaction` annotation is a `RoomMessageText` with an
-            # empty body: without this filter, every history reaction
-            # would add a BLANK line to the timeline.
+            # An `m.reaction` annotation is a message with an empty body:
+            # without this filter, every history reaction would add a
+            # BLANK line to the timeline.
             if annotation_of(getattr(ev, "source", {}).get("content", {}))[0]:
                 continue
             try:
                 raw_ts = getattr(ev, "server_timestamp", 0) or 0
-                if isinstance(ev, RoomMessageImage):
+                if isinstance(ev, ImageEvent):
                     filename = ev.body or "image"
                     own = ev.sender == me
                     out.append(
@@ -732,7 +728,7 @@ class ChatScreen(Screen):
                             timestamp=_format_time(raw_ts),
                         )
                     )
-                elif isinstance(ev, RoomMessageText):
+                elif isinstance(ev, MessageEvent):
                     body = getattr(ev, "body", "") or ""
                     own = ev.sender == me
                     reply_to = reply_target_of(
@@ -1266,7 +1262,7 @@ class ChatScreen(Screen):
 
     def _notify_incoming(
         self,
-        room: MatrixRoom,
+        room: Room,
         entry: TimelineEntry,
         body: str,
     ) -> None:
@@ -1286,11 +1282,11 @@ class ChatScreen(Screen):
                 body,
             )
 
-    async def _handle_incoming_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
-        me = self.client.client.user_id
-        # A reaction is a `RoomMessageText` with an empty body, and nio
-        # also routes it through this callback: without this filter, every
-        # received emoji would add an empty ghost message to the timeline.
+    async def _handle_incoming_message(self, room: Room, event: MessageEvent) -> None:
+        me = self.client.user_id
+        # A reaction is a message with an empty body, and it is routed
+        # through the same callback: without this filter, every received
+        # emoji would add an empty ghost message to the timeline.
         # It is handled by `_handle_reaction`.
         if annotation_of(getattr(event, "source", {}).get("content", {}))[0]:
             return
@@ -1337,25 +1333,18 @@ class ChatScreen(Screen):
         self._append_timeline_entry(room.room_id, entry)
 
     async def _handle_incoming_image(
-        self, room: MatrixRoom, event: "RoomMessageImage"
+        self, room: Room, event: ImageEvent
     ) -> None:
         """Handles the reception of an image."""
-        from nio import RoomMessageImage
-
-        own = event.sender == self.client.client.user_id
+        own = event.sender == self.client.user_id
         sender_name = (
             "You" if own else (room.user_name(event.sender) or event.sender)
         )
         filename = event.body or "image"
 
-        # Format the image message
-        image_url = getattr(event, "url", "") or getattr(event, "file", {}).get("url", "")
-        if not image_url:
-            # Try to fetch the URL from the content
-            content = getattr(event, "source", {}).get("content", {})
-            image_url = content.get("url", "")
-            if not image_url and "file" in content:
-                image_url = content["file"].get("url", "")
+        # Already resolved by the transport, which knows both the Matrix v3
+        # (`url`) and legacy (`file.url`) shapes.
+        image_url = event.url
 
         entry = TimelineEntry(
             sender=event.sender,
@@ -1396,14 +1385,14 @@ class ChatScreen(Screen):
                 timeline.mount(Static(f"        {result}"))
 
     async def _handle_reaction(
-        self, room: MatrixRoom, target_id: str, key: str, sender: str
+        self, room: Room, target_id: str, key: str, sender: str
     ) -> None:
         """Records a reaction and refreshes the target message counter.
 
         Reaction SENT LIVE (sync). History goes through
         `_harvest_reactions`, which builds the same index.
         """
-        me = self.client.client.user_id
+        me = self.client.user_id
         if sender == me:
             # We do not count our own send: the server re-emits it in
             # the sync while we already applied it. Reacting again
@@ -1502,7 +1491,7 @@ class ChatScreen(Screen):
         )
 
     async def _show_invite_dialog(
-        self, room_id: str, room: MatrixRoom, inviter: str
+        self, room_id: str, room: Room, inviter: str
     ) -> None:
         # We NEVER join a room automatically: an invitation is
         # reported and requires an explicit human decision.

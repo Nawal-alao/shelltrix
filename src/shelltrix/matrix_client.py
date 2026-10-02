@@ -32,12 +32,13 @@ from nio import (
 from nio.exceptions import LocalProtocolError
 
 from .config import Credentials, decrypt_store, encrypt_store, ensure_store_dir, remove_store
+from .events import ImageEvent, MessageEvent, MessagePage, Room
 
-MessageHandler = Callable[[MatrixRoom, RoomMessageText], Awaitable[None]]
-ImageHandler = Callable[[MatrixRoom, RoomMessageImage], Awaitable[None]]
+MessageHandler = Callable[[Room, MessageEvent], Awaitable[None]]
+ImageHandler = Callable[[Room, ImageEvent], Awaitable[None]]
 TypingHandler = Callable[[str, list[str]], Awaitable[None]]
 # Incoming invite: (room_id, room, inviter)
-InviteHandler = Callable[[str, MatrixRoom, str], Awaitable[None]]
+InviteHandler = Callable[[str, Room, str], Awaitable[None]]
 # Emoji verification: (transaction_id, user_id, device_id, emojis)
 # where emojis is a list of (emoji, description).
 SasRequestHandler = Callable[[str, str, str, list[tuple[str, str]]], Awaitable[None]]
@@ -45,7 +46,88 @@ SasRequestHandler = Callable[[str, str, str, list[tuple[str, str]]], Awaitable[N
 # (room_id, message)
 SendErrorHandler = Callable[[str, str], Awaitable[None]]
 # Incoming reaction: (room, target message event_id, emoji key, sender)
-ReactionHandler = Callable[[MatrixRoom, str, str, str], Awaitable[None]]
+ReactionHandler = Callable[[Room, str, str, str], Awaitable[None]]
+
+
+# ---------------------------------------------------------------------------
+# nio -> shelltrix
+#
+# This is the whole of shelltrix's knowledge of matrix-nio. Everything below
+# runs once, at the boundary: the UI only ever sees the dataclasses above, so
+# replacing nio with matrix-sdk means rewriting this section and nothing else.
+# ---------------------------------------------------------------------------
+def _to_room(room: MatrixRoom) -> Room:
+    """Normalizes a nio room, resolving display names once and for all.
+
+    `room.user_name()` is nio's own disambiguation: it returns
+    "Alice (@bob:hs)" when two members share a name. We snapshot that here so
+    the UI does not have to reproduce those rules — and so a Rust transport
+    only has to produce a plain name→name mapping.
+    """
+    user_names: dict[str, str] = {}
+    for user_id in room.users:
+        name = room.user_name(user_id)
+        if name is not None:
+            user_names[user_id] = name
+    return Room(
+        room_id=room.room_id,
+        display_name=room.display_name or room.room_id,
+        name=room.name,
+        user_names=user_names,
+    )
+
+
+def _to_timeline_event(
+    room_id: str, event: RoomMessage
+) -> MessageEvent | ImageEvent | None:
+    """Normalizes a history event, or None if it is not something we render.
+
+    History pages carry many event types; only messages and images become
+    timeline entries, so anything else is dropped here rather than by the UI.
+    """
+    if isinstance(event, RoomMessageImage):
+        return ImageEvent(
+            room_id=room_id,
+            sender=event.sender,
+            body=event.body or "image",
+            event_id=event.event_id,
+            server_timestamp=event.server_timestamp,
+            url=_image_url(event),
+            source=getattr(event, "source", {}) or {},
+        )
+    if isinstance(event, RoomMessageText):
+        return MessageEvent(
+            room_id=room_id,
+            sender=event.sender,
+            body=event.body or "",
+            event_id=event.event_id,
+            server_timestamp=event.server_timestamp,
+            msgtype=getattr(event, "msgtype", "m.text") or "m.text",
+            source=getattr(event, "source", {}) or {},
+        )
+    return None
+
+
+def _image_url(event: RoomMessageImage | RoomMessage) -> str:
+    """Media URL of an image event, whichever shape the homeserver used.
+
+    Matrix v3 serves `url`, older servers and encrypted uploads nest it under
+    `file`. Resolving it here means the UI never sees that difference.
+    """
+    url = getattr(event, "url", "") or ""
+    if url:
+        return url
+    file_info = getattr(event, "file", None)
+    if isinstance(file_info, dict) and file_info.get("url"):
+        return str(file_info["url"])
+    content = getattr(event, "source", {}).get("content", {})
+    if isinstance(content, dict):
+        if content.get("url"):
+            return str(content["url"])
+        nested = content.get("file")
+        if isinstance(nested, dict) and nested.get("url"):
+            return str(nested["url"])
+    return ""
 # First sync done: the UI can refresh its room list.
 FirstSyncHandler = Callable[[], Awaitable[None]]
 
@@ -390,24 +472,43 @@ class ShelltrixClient:
     async def decline_invite(self, room_id: str) -> None:
         await self.client.room_leave(room_id)
 
-    def rooms(self) -> dict[str, MatrixRoom]:
-        return self.client.rooms
+    def rooms(self) -> dict[str, Room]:
+        return {rid: _to_room(room) for rid, room in self.client.rooms.items()}
+
+    @property
+    def user_id(self) -> str:
+        """The logged-in user, as the UI needs it.
+
+        The UI used to reach through `client.client.user_id` straight into
+        nio. Exposing it here means nothing above this layer has to know
+        which Matrix library is in use.
+        """
+        return self.creds.user_id
+
+    @property
+    def next_batch(self) -> str | None:
+        """Sync pagination token for history backfill (or None before first sync)."""
+        return getattr(self.client, "next_batch", None)
 
     async def room_messages(self, room_id: str, start: str | None = None, limit: int = 50):
         """Fetches a room's history (scrollback) via pagination.
 
         `start` is a pagination token: None for the most recent messages,
-        or a `prev_batch` token to go further back in time. Returns the nio
-        response (`RoomMessagesResponse`) with `.chunk` (events) and
-        `.start`/`.end` (tokens), or None on error.
+        or a `prev_batch` token to go further back in time. Returns a
+        `MessagePage` with normalized events, or None on error.
         """
         try:
             from nio import RoomMessagesResponse
 
             resp = await self.client.room_messages(room_id, start=start, limit=limit)
-            if isinstance(resp, RoomMessagesResponse):
-                return resp
-            return None
+            if not isinstance(resp, RoomMessagesResponse):
+                return None
+            events: list[MessageEvent | ImageEvent] = []
+            for ev in resp.chunk:
+                normalized = _to_timeline_event(room_id, ev)
+                if normalized is not None:
+                    events.append(normalized)
+            return MessagePage(events=events, start=resp.start, end=resp.end)
         except Exception:
             return None
 
@@ -436,11 +537,33 @@ class ShelltrixClient:
     # ------------------------------------------------------------------
     async def _handle_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
         if self.on_message is not None:
-            await self.on_message(room, event)
+            await self.on_message(
+                _to_room(room),
+                MessageEvent(
+                    room_id=room.room_id,
+                    sender=event.sender,
+                    body=event.body or "",
+                    event_id=event.event_id,
+                    server_timestamp=event.server_timestamp,
+                    msgtype=getattr(event, "msgtype", "m.text") or "m.text",
+                    source=getattr(event, "source", {}) or {},
+                ),
+            )
 
     async def _handle_image(self, room: MatrixRoom, event: RoomMessageImage) -> None:
         if self.on_image is not None:
-            await self.on_image(room, event)
+            await self.on_image(
+                _to_room(room),
+                ImageEvent(
+                    room_id=room.room_id,
+                    sender=event.sender,
+                    body=event.body or "image",
+                    event_id=event.event_id,
+                    server_timestamp=event.server_timestamp,
+                    url=_image_url(event),
+                    source=getattr(event, "source", {}) or {},
+                ),
+            )
 
     async def _handle_reaction(self, room: MatrixRoom, event: RoomMessage) -> None:
         """Relays `m.reaction` events (emoji replies) to the UI.
@@ -460,7 +583,9 @@ class ShelltrixClient:
         key = relates.get("key")
         if not isinstance(target, str) or not isinstance(key, str) or not key:
             return
-        await self.on_reaction(room, target, key, getattr(event, "sender", ""))
+        await self.on_reaction(
+            _to_room(room), target, key, getattr(event, "sender", "")
+        )
 
     async def _handle_typing(self, room: MatrixRoom, event: TypingNoticeEvent) -> None:
         if self.on_typing is not None:
@@ -470,7 +595,7 @@ class ShelltrixClient:
         if event.state_key != self.client.user_id:
             return
         if self.on_invite is not None:
-            await self.on_invite(room.room_id, room, event.sender)
+            await self.on_invite(room.room_id, _to_room(room), event.sender)
 
     async def _handle_verification(self, event: KeyVerificationEvent) -> None:
         # "Short auth string" (SAS) verification: we NEVER accept and

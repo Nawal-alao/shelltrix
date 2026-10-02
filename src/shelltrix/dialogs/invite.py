@@ -7,13 +7,13 @@ the former global ACCENT (cf. NOTES.md).
 
 from __future__ import annotations
 
-from nio import MatrixRoom
 from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
+from ..events import Room
 from .. import themes
 from ..matrix_client import ShelltrixClient
 
@@ -25,7 +25,7 @@ class InviteDialog(ModalScreen[None]):
         self,
         client: ShelltrixClient,
         room_id: str,
-        room: MatrixRoom,
+        room: Room,
         inviter: str,
     ) -> None:
         super().__init__()

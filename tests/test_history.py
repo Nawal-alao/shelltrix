@@ -1,43 +1,37 @@
 """Tests for ChatScreen's scrollback (server history).
 
-Targets the conversion of nio history events into ready-to-prefix TimelineEntry
-objects (`_entries_from_events`): chronological order, event_id, message type,
-mention detection, and the image placeholder.
+Targets the conversion of normalized history events into ready-to-prefix
+TimelineEntry objects (`_entries_from_events`): chronological order,
+event_id, message type, mention detection, and the image placeholder.
+
+The events here are the dataclasses from `shelltrix.events` — the same ones a
+Rust transport would emit — not matrix-nio objects. That is deliberate: these
+tests now describe shelltrix's own contract, so they survive the transport
+being swapped.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
-from nio import RoomMessageImage, RoomMessageText
-
+from shelltrix.events import ImageEvent, MessageEvent, Room
 from shelltrix.formatting import reaction_counts
 from shelltrix.screens.chat import ChatScreen
-
-
-class _StubRoom:
-    def __init__(self, user_id: str) -> None:
-        self.user_id = user_id
-
-    def user_name(self, sender: str) -> str | None:
-        mapping = {"@alice:hs": "Alice", "@bob:hs": "Bob"}
-        return mapping.get(sender)
-
-
-class _StubInnerClient:
-    def __init__(self, user_id: str) -> None:
-        self.user_id = user_id
 
 
 class _StubClient:
     """Mini ShelltrixClient double, enough for _entries_from_events."""
 
     def __init__(self) -> None:
-        self.client = _StubInnerClient("@me:hs")
-        self._rooms = {"!r:hs": _StubRoom("@me:hs")}
+        self.user_id = "@me:hs"
+        self._rooms = {
+            "!r:hs": Room(
+                room_id="!r:hs",
+                display_name="Room",
+                user_names={"@alice:hs": "Alice", "@bob:hs": "Bob"},
+            )
+        }
 
-    def rooms(self) -> dict[str, _StubRoom]:
+    def rooms(self) -> dict[str, Room]:
         return self._rooms
 
 
@@ -51,23 +45,29 @@ def text_event(
     ts: int,
     event_id: str,
     msgtype: str = "m.text",
-) -> RoomMessageText:
-    ev = MagicMock(spec=RoomMessageText)
-    ev.sender = sender
-    ev.body = body
-    ev.server_timestamp = ts
-    ev.event_id = event_id
-    ev.msgtype = msgtype
-    return ev
+    source: dict | None = None,
+) -> MessageEvent:
+    return MessageEvent(
+        room_id="!r:hs",
+        sender=sender,
+        body=body,
+        event_id=event_id,
+        server_timestamp=ts,
+        msgtype=msgtype,
+        source=source or {"content": {"msgtype": msgtype, "body": body}},
+    )
 
 
-def image_event(sender: str, ts: int, event_id: str) -> RoomMessageImage:
-    ev = MagicMock(spec=RoomMessageImage)
-    ev.sender = sender
-    ev.body = "photo.png"
-    ev.server_timestamp = ts
-    ev.event_id = event_id
-    return ev
+def image_event(sender: str, ts: int, event_id: str) -> ImageEvent:
+    return ImageEvent(
+        room_id="!r:hs",
+        sender=sender,
+        body="photo.png",
+        event_id=event_id,
+        server_timestamp=ts,
+        url="mxc://hs/photo",
+        source={"content": {"body": "photo.png", "url": "mxc://hs/photo"}},
+    )
 
 
 def test_entries_sorted_chronologically() -> None:
@@ -131,31 +131,32 @@ def test_msgtype_preserved() -> None:
 # ---------------------------------------------------------------------------
 
 
-def reaction_event(sender: str, target: str, key: str, ts: int, event_id: str) -> RoomMessageText:
+def reaction_event(sender: str, target: str, key: str, ts: int, event_id: str) -> MessageEvent:
     """`m.reaction` annotation.
 
-    nio decodes it as a `RoomMessageText` with an EMPTY body — which is exactly
+    It reaches the timeline as a message with an EMPTY body — which is exactly
     what makes the filter indispensable: without it, every reaction from the
     history adds a blank line to the timeline.
     """
-    ev = MagicMock(spec=RoomMessageText)
-    ev.sender = sender
-    ev.body = ""
-    ev.server_timestamp = ts
-    ev.event_id = event_id
-    ev.msgtype = "m.text"
-    ev.source = {
-        "content": {
-            "msgtype": "m.text",
-            "body": "",
-            "m.relates_to": {
-                "rel_type": "m.annotation",
-                "event_id": target,
-                "key": key,
-            },
-        }
-    }
-    return ev
+    return MessageEvent(
+        room_id="!r:hs",
+        sender=sender,
+        body="",
+        event_id=event_id,
+        server_timestamp=ts,
+        msgtype="m.text",
+        source={
+            "content": {
+                "msgtype": "m.text",
+                "body": "",
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": target,
+                    "key": key,
+                },
+            }
+        },
+    )
 
 
 def test_annotation_never_becomes_a_blank_message() -> None:

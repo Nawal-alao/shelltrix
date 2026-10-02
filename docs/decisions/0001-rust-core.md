@@ -121,7 +121,8 @@ Migrated so far, each step verified:
 | Seam (`shelltrix._core`), backend selection, parity tests | done, 260 tests |
 | `/sync` parsing → timeline messages | done, 30x measured |
 | Feasibility against a real homeserver (step 3.0) | done, loop closed |
-| Network + event loop (step 3.1–3.2) | **not started** |
+| Transport seam: UI free of nio (step 3.1) | done, enforced by a test |
+| Rust transport (step 3.2) | **not started** |
 | E2EE (olm store, key management) | **not started** |
 | Rust as the default backend | not started |
 
@@ -166,6 +167,28 @@ Three findings that the design has to respect:
    `client.matrix_auth().login_username(...)`, room creation takes a raw
    `create_room::v3::Request`, and `send_text` no longer exists. The seam is
    therefore more valuable than it looked: it is what absorbs this churn.
+
+### Step 3.1 — the seam, done
+
+Before a Rust transport can exist, the UI has to stop depending on matrix-nio,
+because the two libraries disagree about almost everything: nio hands out
+callbacks with its own event objects, `matrix-sdk` runs a loop and exposes a
+stream of its own types.
+
+`shelltrix.events` is now the contract: `Room`, `MessageEvent`, `ImageEvent`,
+`MessagePage`. The rule is that a transport RESOLVES and the UI CONSUMES —
+`Room.user_names` already holds disambiguated names, so nio's "Alice
+(@bob:hs)" rules are applied once at the boundary rather than copied.
+
+What that removed: eight `self.client.client.user_id` reaches into nio from
+the UI, a `from nio import RoomMessageImage` in the middle of a handler, and
+`room_messages()` handing a raw `RoomMessagesResponse` to the timeline.
+`test_no_module_above_the_transport_imports_nio` now enforces this, and it
+caught a leak in `dialogs/invite.py` the moment it was written.
+
+The seam is therefore closed on the Python side. Step 3.2 becomes: rewrite
+`matrix_client.py`'s nio section as a matrix-sdk transport emitting these same
+dataclasses.
 
 Recipe to reproduce: a Synapse venv (`matrix-synapse`, Python 3.12, SQLite),
 `register_new_matrix_user -c homeserver.yaml -a`, then a cargo bin depending

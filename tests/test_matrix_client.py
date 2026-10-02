@@ -11,8 +11,35 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from nio import RoomMessageText
+
 from shelltrix.config import Credentials
+from shelltrix.events import MessageEvent, MessagePage, Room
 from shelltrix.matrix_client import ShelltrixClient
+
+
+def nio_room(room_id: str = "!inv:hs"):
+    """A minimal stand-in for nio's MatrixRoom, as the boundary sees it.
+
+    Only what `_to_room` reads: the member list, nio's own `user_name()`
+    disambiguation, and the resolved names.
+    """
+
+    class _Room:
+        users = {"@alice:hs": object(), "@bob:hs": object()}
+
+        def __init__(self) -> None:
+            self.room_id = room_id
+            self.name = "invite"
+
+        def user_name(self, user_id: str) -> str | None:
+            return {"@alice:hs": "Alice", "@bob:hs": "Bob"}.get(user_id)
+
+        @property
+        def display_name(self) -> str:
+            return "Invite Room"
+
+    return _Room()
 
 
 def make_client(**overrides: object) -> ShelltrixClient:
@@ -109,10 +136,14 @@ async def test_handle_invite_forwarded_for_own_user() -> None:
 
     nc.on_invite = on_invite  # type: ignore[assignment]
 
-    room = MagicMock(room_id="!inv:hs")
-    event = MagicMock(state_key="@me:hs", sender="@inviter:hs")
-    await nc._handle_invite(room, event)
-    assert fired == [("!inv:hs", room, "@inviter:hs")]
+    await nc._handle_invite(nio_room(), MagicMock(state_key="@me:hs", sender="@inviter:hs"))
+    rid, room, inviter = fired[0]
+    assert (rid, inviter) == ("!inv:hs", "@inviter:hs")
+    # The UI is handed a normalized Room, never the nio object: this is the
+    # boundary that lets the transport be swapped for a Rust one.
+    assert isinstance(room, Room)
+    assert room.room_id == "!inv:hs"
+    assert room.user_name("@bob:hs") == "Bob"
 
 
 @pytest.mark.asyncio
@@ -169,20 +200,33 @@ async def test_send_image_missing_file() -> None:
 
 
 @pytest.mark.asyncio
-async def test_room_messages_success_returns_response() -> None:
-    """room_messages() returns the nio response on success (scrollback)."""
+async def test_room_messages_returns_normalized_page() -> None:
+    """room_messages() returns a MessagePage, not a nio response."""
     nc = make_client()
-    resp = object()
-    nc.client.room_messages = AsyncMock(return_value=resp)
-    # Import the expected type: we simulate a RoomMessagesResponse for the
-    # isinstance in ShelltrixClient.room_messages.
     from nio import RoomMessagesResponse
 
+    text = MagicMock(spec=RoomMessageText)
+    text.sender = "@bob:hs"
+    text.body = "hello"
+    text.event_id = "$e1"
+    text.server_timestamp = 1700
+    text.msgtype = "m.text"
+    text.source = {"content": {"body": "hello", "msgtype": "m.text"}}
+
     resp = MagicMock(spec=RoomMessagesResponse)
-    resp.chunk = []
+    resp.chunk = [text, object()]
+    resp.start = "T1"
+    resp.end = "T2"
     nc.client.room_messages = AsyncMock(return_value=resp)
-    out = await nc.room_messages("!r:hs", start="T1", limit=40)
-    assert out is resp
+
+    page = await nc.room_messages("!r:hs", start="T1", limit=40)
+
+    assert isinstance(page, MessagePage)
+    assert (page.start, page.end) == ("T1", "T2")
+    # The unrenderable event is dropped here rather than by the UI.
+    assert len(page.events) == 1
+    assert isinstance(page.events[0], MessageEvent)
+    assert page.events[0].body == "hello"
     nc.client.room_messages.assert_awaited_once_with("!r:hs", start="T1", limit=40)
 
 
