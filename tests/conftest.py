@@ -1,15 +1,14 @@
-"""Fixtures globales : isole le cache SQLite et le trousseau système.
+"""Global fixtures: isolate the SQLite cache and the system keyring.
 
-Les tests qui instancient `ChatScreen` créent un `MessageCache` (dont le
-répertoire par défaut est `~/.config/shelltrix/cache`). On redirige `CONFIG_DIR`
-du module `cache` vers un répertoire temporaire pour que les tests n'écrivent
-jamais dans le vrai répertoire de configuration de l'utilisateur.
+Tests that instantiate `ChatScreen` create a `MessageCache` (whose default
+directory is `~/.config/shelltrix/cache`). We redirect `CONFIG_DIR` of the
+`cache` module to a temporary directory so that tests never write into the
+user's real configuration directory.
 
-Le trousseau système est remplacé par un store en mémoire : sans cela, un
-test qui chiffre le store y dépose la clé E2EE de session dans le keyring de
-l'utilisateur, et les tests suivants la relisent — résultat, un test qui
-attend « aucune clé disponible » dépend alors de l'historique du keyring de
-la machine.
+The system keyring is replaced by an in-memory store: without this, a test
+that encrypts the store drops the session E2EE key into the user's keyring,
+and the following tests read it back — as a result, a test that expects
+"no key available" would then depend on the keyring history of the machine.
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ def _isolate_cache_dir(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def fake_keyring(monkeypatch):
-    """Keyring en mémoire, pour tous les tests : aucun contact au système."""
+    """In-memory keyring, for all tests: no contact with the system."""
     import keyring
 
     store: dict[tuple[str, str], str] = {}

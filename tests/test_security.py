@@ -1,17 +1,17 @@
-"""Tests de sécurité de shelltrix.
+"""shelltrix security tests.
 
-Vérifient les propriétés de durcissement du client :
-  - le token d'accès ne finit jamais en clair sur disque (keyring + 0600) ;
-  - le store E2EE est chiffré au repos (Fernet) et verrouillé au démarrage ;
-  - la clé de récupération ne stocke qu'un vérificateur scrypt, pas la clé ;
-  - le cache SQLite est insensible à l'injection SQL (placeholders uniquement) ;
-  - les noms de fichiers du cache neutralisent les tentatives de traversal ;
-  - notify-send est appelé sans shell (aucune injection de commande possible) ;
-  - le téléchargement d'images reste cantonné au homeserver et au dossier
-    de cache (pas de SSRF ni de traversal hors cache).
+Verify the hardening properties of the client:
+  - the access token never lands in plaintext on disk (keyring + 0600);
+  - the E2EE store is encrypted at rest (Fernet) and locked on startup;
+  - the recovery key only stores an scrypt verifier, not the key itself;
+  - the SQLite cache is immune to SQL injection (placeholders only);
+  - the cache file names neutralize traversal attempts;
+  - notify-send is called without a shell (no command injection possible);
+  - image download stays confined to the homeserver and the cache directory
+    (no SSRF and no traversal outside the cache).
 
-Ce fichier isole totalement la configuration (CONFIG_DIR, keyring) dans des
-répertoires/objets temporaires : aucune écriture dans le vrai ~/.config.
+This file fully isolates the configuration (CONFIG_DIR, keyring) into
+temporary directories/objects: nothing is written to the real ~/.config.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from shelltrix.notifications import notify
 
 @pytest.fixture()
 def isolated_config(tmp_path, monkeypatch):
-    """Redirige toutes les constantes de config vers un répertoire temporaire."""
+    """Redirects all config constants to a temporary directory."""
     cfg = tmp_path / "config"
     cfg.mkdir()
     import shelltrix.accounts as accounts
@@ -57,7 +57,7 @@ def isolated_config(tmp_path, monkeypatch):
         config, "STORE_ENC_MARKER", cfg / "store" / ".shelltrix-encrypted"
     )
     monkeypatch.setattr(config, "RECOVERY_FILE", cfg / "recovery.json")
-    # Clé de secours du store : isolée aussi, jamais le vrai home.
+    # Store fallback key: also isolated, never the real home.
     monkeypatch.setattr(config, "STORE_KEY_FILE", cfg / "store.key")
     monkeypatch.setattr(accounts, "ACCOUNTS_FILE", cfg / "accounts.json")
     monkeypatch.setattr(notifications, "CONFIG_FILE", cfg / "config.json")
@@ -77,7 +77,7 @@ def _entry(event_id: str, body: str = "hello", sender: str = "@bob:hs") -> Timel
 
 
 # ---------------------------------------------------------------------------
-# Credentials : token jamais en clair sur disque
+# Credentials: token never in plaintext on disk
 # ---------------------------------------------------------------------------
 
 
@@ -136,7 +136,7 @@ class TestCredentialStorage:
 
 
 # ---------------------------------------------------------------------------
-# Store E2EE : chiffrement au repos (Fernet) + verrou
+# E2EE store: encryption at rest (Fernet) + lock
 # ---------------------------------------------------------------------------
 
 
@@ -168,7 +168,7 @@ class TestStoreEncryption:
         config.encrypt_store()
         assert config.STORE_ENC_MARKER.exists()
 
-        # On retire la clé du trousseau : plus rien ne peut déchiffrer.
+        # We remove the key from the keyring: nothing can decrypt any more.
         store_keys = [
             k for k in fake_keyring if k[1] == config._USERNAME_STORE_KEY
         ]
@@ -197,7 +197,7 @@ class TestStoreEncryption:
 
 
 # ---------------------------------------------------------------------------
-# Clé de récupération : vérificateur scrypt, jamais la clé elle-même
+# Recovery key: scrypt verifier, never the key itself
 # ---------------------------------------------------------------------------
 
 
@@ -224,7 +224,7 @@ class TestRecoveryKey:
 
 
 # ---------------------------------------------------------------------------
-# Cache SQLite : résistance à l'injection et à la traversal de chemins
+# SQLite cache: resistance to injection and to path traversal
 # ---------------------------------------------------------------------------
 
 
@@ -240,7 +240,7 @@ class TestCacheSecurity:
 
         assert len(cache.load_entries(evil_room)) == 1
         assert len(cache.load_entries("safe_room")) == 1
-        # La table existe toujours : aucune requête n'a été exécutée.
+        # The table still exists: no query was executed.
         table = cache._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
         ).fetchone()
@@ -256,7 +256,7 @@ class TestCacheSecurity:
         poison = "x'); DROP TABLE messages;--"
         assert cache.search_messages(poison) == []
         assert cache.search_messages("' OR '1'='1") == []
-        # Encore intègre après les recherches empoisonnées.
+        # Still intact after the poisoned searches.
         table = cache._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
         ).fetchone()
@@ -269,7 +269,7 @@ class TestCacheSecurity:
         cache = MessageCache("@a:hs")
         cache.upsert_entries("r1", [_entry("e1", body="alpha-static")])
         assert len(cache.search_messages("alpha")) == 1
-        assert len(cache.search_messages("%")) >= 0  # ne lève pas
+        assert len(cache.search_messages("%")) >= 0  # does not raise
 
     def test_cache_filename_neutralizes_path_traversal(self, tmp_path) -> None:
         evil_user = "@alice:../../../../tmp/pwned"
@@ -286,7 +286,7 @@ class TestCacheSecurity:
 
 
 # ---------------------------------------------------------------------------
-# notify-send : pas de shell, arguments littéraux (pas d'injection)
+# notify-send: no shell, literal arguments (no injection)
 # ---------------------------------------------------------------------------
 
 
@@ -313,7 +313,7 @@ class TestNotifyInjection:
         assert called["shell"] is None or called["shell"] is False
         assert called["args"][0] == "notify-send"
         assert "--app-name=shelltrix" in called["args"]
-        assert evil in called["args"]  # c'est UN argument littéral, jamais exécuté
+        assert evil in called["args"]  # it is ONE literal argument, never run
         assert "rm -rf" in called["args"][-1]
 
     def test_no_op_when_notify_send_missing(
@@ -333,7 +333,7 @@ class TestNotifyInjection:
 
 
 # ---------------------------------------------------------------------------
-# Téléchargement d'images : pas de SSRF, pas de traversal hors cache
+# Image download: no SSRF, no traversal outside the cache
 # ---------------------------------------------------------------------------
 
 
@@ -366,10 +366,10 @@ class TestImageDownloadSecurity:
             raise urllib.error.URLError("offline")
 
         monkeypatch.setattr(urllib.request, "urlopen", fake_request)
-        # Le contenu image est "hébergé" chez un attaquant, mais la requête
-        # part toujours vers LE homeserver configuré par l'utilisateur.
+        # The image content is "hosted" by an attacker, but the request
+        # still goes to THE homeserver configured by the user.
         download_image("mxc://evil.example/media123", "tok", "https://hs.example")
-        assert calls, "aucune requête émise"
+        assert calls, "no request issued"
         assert calls[0].startswith("https://hs.example/_matrix/media/r0/download/")
 
     def test_media_suffix_cannot_redirect_away(
@@ -418,7 +418,7 @@ class TestImageDownloadSecurity:
     def test_guess_extension_is_an_allowlist(self) -> None:
         assert _guess_extension("x.png") == ".png"
         assert _guess_extension("a.b.webp") == ".webp"
-        assert _guess_extension("x.evil") == ".png"  # inconnu → défaut sûr
+        assert _guess_extension("x.evil") == ".png"  # unknown → safe default
         assert _guess_extension("x.php") == ".png"
         assert "/" not in _guess_extension("../../../../x.png")
 
@@ -437,7 +437,7 @@ class TestImageDownloadSecurity:
 
 
 # ---------------------------------------------------------------------------
-# Rendu : le contenu utilisateur ne fabrique pas de markup arbitraire
+# Rendering: user content cannot forge arbitrary markup
 # ---------------------------------------------------------------------------
 
 
@@ -447,9 +447,9 @@ class TestMarkupEscaping:
     ) -> None:
         body = "[red]evil[/red] **bold**"
         out = _inline_markdown(body)
-        # Rich échappe le `[` ouvrant : le tag ne peut pas être interprété,
-        # le texte s'affiche littéralement. Les tags injectés par le
-        # formateur (bold) restent fonctionnels.
+        # Rich escapes the opening `[`: the tag cannot be interpreted,
+        # the text displays literally. The tags injected by the
+        # formatter (bold) remain functional.
         assert r"\[red]" in out
         assert r"\[/red]" in out
         assert "[bold]" in out
@@ -464,17 +464,17 @@ class TestMarkupEscaping:
 
 
 # ---------------------------------------------------------------------------
-# H1 — Chaîne de confiance d'installation : source pinnée, pas de branche mouvante
+# H1 — Install trust chain: pinned source, no moving branch
 # ---------------------------------------------------------------------------
 
 
 class TestSupplyChainInstall:
     ROOT = Path(__file__).resolve().parent.parent
 
-    # Une référence pinnée est soit un SHA (40 hex), soit le tag de release.
-    # Le tag est nécessaire parce qu'un fichier ne peut pas contenir le SHA du
-    # commit qui le contient : `v1.0.0` désigne bien le dernier commit, là où
-    # un SHA written dans ce même commit serait forcément en retard d'un.
+    # A pinned ref is either a SHA (40 hex) or the release tag.
+    # The tag is necessary because a file cannot contain the SHA of the
+    # commit that contains it: `v1.0.0` does designate the last commit,
+    # whereas a SHA written in that same commit would necessarily lag by one.
     _REF_RE = r'([0-9a-f]{40}|v[0-9]+(?:\.[0-9]+)*(?:-[0-9A-Za-z.]+)?)'
     _PIN_RE = r'SHELLTRIX_REF="\$\{SHELLTRIX_REF:-' + _REF_RE + r'\}"'
 
@@ -482,14 +482,14 @@ class TestSupplyChainInstall:
         install = (self.ROOT / "install.sh").read_text()
         m = re.search(self._PIN_RE, install)
         assert m, (
-            "install.sh doit pinnner SHELLTRIX_REF sur un SHA de 40 hex "
-            "ou sur le tag de release (ex. v1.0.0)"
+            "install.sh must pin SHELLTRIX_REF to a 40-hex SHA "
+            "or to the release tag (e.g. v1.0.0)"
         )
         return m.group(1)
 
     @staticmethod
     def _resolve(ref: str) -> str | None:
-        """SHA du commit désigné par `ref`, ou None si absent du clone."""
+        """SHA of the commit designated by `ref`, or None if absent from the clone."""
         proc = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
             cwd=str(Path(__file__).resolve().parent.parent),
@@ -501,30 +501,30 @@ class TestSupplyChainInstall:
     def test_install_sh_pins_a_real_commit(self) -> None:
         ref = self._pinned_ref()
         if self._resolve(ref) is None:
-            pytest.skip(f"{ref} absent du clone (clone sans tags ?)")
-        assert not ref.startswith("main"), "une branche mouvante n'est pas pinnée"
+            pytest.skip(f"{ref} absent from the clone (clone without tags?)")
+        assert not ref.startswith("main"), "a moving branch is not pinned"
 
     def test_install_sh_urls_are_pinned_https(self) -> None:
         content = (self.ROOT / "install.sh").read_text()
-        # L'URL git est toujours suffixée @${SHELLTRIX_REF}.
+        # The git URL is always suffixed with @${SHELLTRIX_REF}.
         assert re.search(
             r"git\+https://github\.com/Nawal-alao/shelltrix\.git@\$\{SHELLTRIX_REF\}",
             content,
         )
-        # Aucune référence à une branche mouvante ni URL "nue".
+        # No reference to a moving branch and no "bare" URL.
         assert "@main" not in content
         assert 'github.com/Nawal-alao/shelltrix.git"' not in content
 
     def test_readme_install_commands_pinned(self) -> None:
         ref = self._pinned_ref()
         readme = (self.ROOT / "README.md").read_text()
-        assert f"/{ref}/install.sh" in readme  # curl pinné
-        assert f"@{ref}" in readme  # install manuelle pipx pinnée
+        assert f"/{ref}/install.sh" in readme  # pinned curl
+        assert f"@{ref}" in readme  # pinned manual pipx install
         assert "main/install.sh" not in readme
 
     @staticmethod
     def _show(ref: str, path: str) -> str | None:
-        """Contenu de `path` au commit `ref`, ou None si indisponible."""
+        """Content of `path` at commit `ref`, or None if unavailable."""
         proc = subprocess.run(
             ["git", "show", f"{ref}:{path}"],
             cwd=str(Path(__file__).resolve().parent.parent),
@@ -534,65 +534,66 @@ class TestSupplyChainInstall:
         return proc.stdout if proc.returncode == 0 else None
 
     def test_pinned_ref_installs_hardened_code(self) -> None:
-        """Le chemin `curl .../<ref>/install.sh | sh` doit installer du code durci.
+        """The `curl .../<ref>/install.sh | sh` path must install hardened code.
 
-        Pinner une source ne suffit pas : le README sert `install.sh` *depuis*
-        la référence pinnée, et ce script-là épingle à son tour une autre
-        référence. Si cette seconde référence est antérieure au durcissement,
-        la commande documentée installe du code vulnérable alors que tout
-        paraît pinné. On verrouille donc les deux maillons de la chaîne.
+        Pinning a source is not enough: the README serves `install.sh` *from*
+        the pinned ref, and that script in turn pins yet another ref. If that
+        second ref predates the hardening, the documented command installs
+        vulnerable code while everything looks pinned. So we lock down both
+        links of the chain.
         """
         ref = self._pinned_ref()
 
-        # Maillon 1 : le code directement pinné est durci (marqueur H2).
+        # Link 1: the directly pinned code is hardened (H2 marker).
         code = self._show(ref, "src/shelltrix/cache.py")
         if code is None:
-            pytest.skip(f"historique indisponible pour {ref} (clone superficiel ?)")
+            pytest.skip(f"history unavailable for {ref} (shallow clone?)")
         assert "MAX_CACHE_BYTES" in code, (
-            f"SHELLTRIX_REF={ref} pointe sur un commit antérieur au "
-            "durcissement H2 : l'install pinne du code non durci."
+            f"SHELLTRIX_REF={ref} points at a commit predating the H2 "
+            "hardening: the install pins unhardened code."
         )
 
-        # Maillon 2 : le script servi depuis `ref` épingle lui aussi du code durci.
+        # Link 2: the script served from `ref` also pins hardened code.
         served = self._show(ref, "install.sh")
-        assert served is not None, f"install.sh introuvable au commit {ref}"
+        assert served is not None, f"install.sh not found at commit {ref}"
         m = re.search(self._PIN_RE, served)
-        assert m, f"install.sh@{ref} ne pinne ni SHA ni tag"
+        assert m, f"install.sh@{ref} pins neither a SHA nor a tag"
         inner = m.group(1)
 
         inner_code = self._show(inner, "src/shelltrix/cache.py")
         if inner_code is None:
-            pytest.skip(f"historique indisponible pour {inner}")
+            pytest.skip(f"history unavailable for {inner}")
         assert "MAX_CACHE_BYTES" in inner_code, (
-            f"install.sh@{ref} épingle {inner}, commit antérieur au durcissement : "
-            "`curl | sh` depuis le README installerait du code non durci."
+            f"install.sh@{ref} pins {inner}, a commit predating the hardening: "
+            "`curl | sh` from the README would install unhardened code."
         )
 
     def test_pinned_ref_is_in_this_history(self) -> None:
-        """La référence pinnée doit appartenir à l'historique de `main`.
+        """The pinned ref must belong to `main`'s history.
 
-        Elle est posée sur le commit de release, donc forcément un ancêtre de
-        `HEAD` — et non un commit d'une branche divergente ou d'un autre
-        dépôt, que `pipx install git+…@ref` accepterait sans protestation.
-        (Le « le pin est-il à jour ? » se vérifie au release : le tag est posé
-        sur le dernier commit, et `install.sh` est commité dans le même lot.)
+        It is set on the release commit, hence necessarily an ancestor of
+        `HEAD` — and not a commit from a diverged branch or from another
+        repository, which `pipx install git+…@ref` would accept without
+        protest. (The "is the pin up to date?" question is verified at
+        release time: the tag is set on the last commit, and `install.sh` is
+        committed in the same batch.)
         """
         ref = self._pinned_ref()
         if self._resolve(ref) is None:
-            pytest.skip(f"{ref} absent du clone (tag non poussé ?)")
+            pytest.skip(f"{ref} absent from the clone (tag not pushed?)")
         merged = subprocess.run(
             ["git", "merge-base", "--is-ancestor", f"{ref}^{{commit}}", "HEAD"],
             cwd=str(self.ROOT),
             capture_output=True,
         )
         assert merged.returncode == 0, (
-            f"SHELLTRIX_REF={ref} n'est pas un ancêtre de HEAD : "
-            "l'installateur servirait du code d'une autre histoire."
+            f"SHELLTRIX_REF={ref} is not an ancestor of HEAD: "
+            "the installer would serve code from another history."
         )
 
 
 # ---------------------------------------------------------------------------
-# H2 — Cache : répertoire 0700, plafond de stockage + garde par salon
+# H2 — Cache: 0700 directory, storage cap + per-room guard
 # ---------------------------------------------------------------------------
 
 
@@ -610,14 +611,14 @@ class TestCacheStorageGuards:
         self, tmp_path, monkeypatch
     ) -> None:
         d = tmp_path / "cache"
-        d.mkdir(mode=0o755)  # umask permissif simulé
+        d.mkdir(mode=0o755)  # simulated permissive umask
         (d / "at_a_hs.db").write_bytes(b"x")
         os.chmod(d / "at_a_hs.db", 0o644)
         cache = MessageCache("@a:hs")
         assert cache.path.stat().st_mode & 0o777 == 0o600
 
     def test_prune_keeps_newest_per_room(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr(cache_mod, "MAX_CACHE_BYTES", 0)  # toujours au-dessus
+        monkeypatch.setattr(cache_mod, "MAX_CACHE_BYTES", 0)  # always over the cap
         monkeypatch.setattr(cache_mod, "CACHE_KEEP_PER_ROOM", 3)
         cache = self._cache(tmp_path, monkeypatch)
         for i in range(8):
@@ -628,7 +629,7 @@ class TestCacheStorageGuards:
 
         kept = sorted(e.body for e in cache.load_entries("r1"))
         assert kept == ["msg5", "msg6", "msg7"]
-        # L'autre salon n'est pas touché par la garde du premier.
+        # The other room is not touched by the first room's guard.
         other = _entry("x1", body="other")
         other.time_ms = 1704110400000
         cache.upsert_entries("r2", [other])
@@ -644,7 +645,7 @@ class TestCacheStorageGuards:
 
 
 # ---------------------------------------------------------------------------
-# H3 — Médias : plafond de taille, écriture atomique 0600, dossier 0700
+# H3 — Media: size cap, atomic 0600 write, 0700 directory
 # ---------------------------------------------------------------------------
 
 
@@ -680,7 +681,7 @@ class TestImageDownloadLimits:
             headers = {"Content-Length": "999999999"}
 
             def read(self, size: int = -1) -> bytes:
-                raise AssertionError("read() ne doit jamais être appelé")
+                raise AssertionError("read() must never be called")
 
             def __enter__(self):
                 return self
@@ -717,7 +718,7 @@ class TestImageDownloadLimits:
             json.dumps({"max_image_bytes": 1234})
         )
         assert ir._max_image_bytes() == 1234
-        # Valeurs invalides → repli sur le défaut sûr.
+        # Invalid values → fall back to the safe default.
         config.CONFIG_DIR.joinpath("config.json").write_text(
             json.dumps({"max_image_bytes": -7})
         )
@@ -739,13 +740,13 @@ class TestImageDownloadLimits:
         assert p.parent.stat().st_mode & 0o777 == 0o700
         assert p.stat().st_mode & 0o777 == 0o600
         assert p.read_bytes() == b"IMAGEBYTES"
-        # Aucune trace de fichier temporaire (.part) résiduel.
+        # No leftover temporary file (.part) trace.
         leftovers = list(isolated_config.rglob("*.part"))
         assert leftovers == []
 
 
 # ---------------------------------------------------------------------------
-# H4 — Store au repos : clé de secours fichier 0600, échec sonore, purge
+# H4 — Store at rest: file fallback key 0600, loud failure, purge
 # ---------------------------------------------------------------------------
 
 
@@ -766,13 +767,13 @@ class TestStoreKeyFallback:
         self._store_with_data()
         config.encrypt_store()
 
-        # Le chiffrement a réussi via la clé de secours.
+        # Encryption succeeded via the fallback key.
         assert config.STORE_ENC_MARKER.exists()
         assert config.STORE_KEY_FILE.exists()
         assert config.STORE_KEY_FILE.stat().st_mode & 0o777 == 0o600
         assert (config.STORE_DIR / "nio.db").read_bytes() != b"E2EE session keys"
 
-        # Et le déchiffrement relit cette même clé de secours.
+        # And decryption reads back that same fallback key.
         config.decrypt_store()
         assert not config.STORE_ENC_MARKER.exists()
         assert (config.STORE_DIR / "nio.db").read_bytes() == b"E2EE session keys"

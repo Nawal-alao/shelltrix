@@ -1,9 +1,9 @@
-"""Tests pour le contrat async des handlers de ChatScreen.
+"""Tests for the async contract of the ChatScreen handlers.
 
-Tous les handlers assignés à self.client.on_* doivent être des coroutines :
-ShelltrixClient les await (ex. matrix_client._handle_typing fait
-`await self.on_typing(...)`), donc une fonction synchrone assignée à la place
-planterait avec un TypeError sur chaque événement.
+Every handler assigned to self.client.on_* must be a coroutine: ShelltrixClient
+awaits them (e.g. matrix_client._handle_typing does `await self.on_typing(...)`),
+so a synchronous function assigned in its place would blow up with a TypeError
+on every event.
 """
 
 from __future__ import annotations
@@ -14,13 +14,13 @@ from shelltrix.screens.chat import ChatScreen
 
 
 def test_typing_handler_is_coroutine() -> None:
-    """_handle_typing doit être async pour satisfaire TypingHandler."""
+    """_handle_typing must be async to satisfy TypingHandler."""
     assert inspect.iscoroutinefunction(ChatScreen._handle_typing)
 
 
 def test_all_client_handlers_are_coroutines() -> None:
-    """Chaque handler branché sur self.client.on_* dans on_mount doit être
-    async, sinon le await côté ShelltrixClient échoue à l'exécution."""
+    """Every handler wired to self.client.on_* in on_mount must be async,
+    otherwise the await inside ShelltrixClient fails at runtime."""
     for name in (
         "_handle_incoming_message",
         "_handle_incoming_image",

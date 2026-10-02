@@ -1,4 +1,4 @@
-"""Tests pour le module formatting."""
+"""Tests for the formatting module."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from shelltrix.formatting import (
 
 
 class TestSenderColor:
-    """Tests pour _sender_color."""
+    """Tests for _sender_color."""
 
     def test_returns_hex_color(self) -> None:
         color = _sender_color("@alice:matrix.org")
@@ -36,7 +36,7 @@ class TestSenderColor:
 
 
 class TestInlineMarkdown:
-    """Tests pour _inline_markdown."""
+    """Tests for _inline_markdown."""
 
     def test_escapes_brackets(self) -> None:
         result = _inline_markdown("[link](url)")
@@ -74,7 +74,7 @@ class TestInlineMarkdown:
 
 
 class TestFormatTime:
-    """Tests pour _format_time."""
+    """Tests for _format_time."""
 
     def test_returns_hh_mm_format(self) -> None:
         # 2024-01-01 12:00:00 UTC
@@ -90,7 +90,7 @@ class TestFormatTime:
 
 
 class TestFuzzyScore:
-    """Tests pour _fuzzy_score."""
+    """Tests for _fuzzy_score."""
 
     def test_exact_match(self) -> None:
         assert _fuzzy_score("test", "test") > 0
@@ -114,7 +114,7 @@ class TestFuzzyScore:
 
 
 class TestUrlRegex:
-    """Tests pour _URL_RE."""
+    """Tests for _URL_RE."""
 
     def test_matches_http_url(self) -> None:
         match = _URL_RE.search("Check http://example.com")

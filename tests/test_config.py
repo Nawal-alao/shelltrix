@@ -1,4 +1,4 @@
-"""Tests pour le module config — fonctions pures."""
+"""Tests for the config module — pure functions."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from shelltrix.config import (
 
 
 class TestNormalizeRecoveryKey:
-    """Tests pour normalize_recovery_key()."""
+    """Tests for normalize_recovery_key()."""
 
     def test_removes_spaces(self) -> None:
         result = normalize_recovery_key("abc def ghi")
@@ -39,7 +39,7 @@ class TestNormalizeRecoveryKey:
 
 
 class TestFirstRunMarker:
-    """Tests pour le marqueur qui n'offre le splash qu'une fois."""
+    """Tests for the marker that shows the splash only once."""
 
     def test_absent_marker_means_first_run(self, tmp_path, monkeypatch):
         monkeypatch.setattr("shelltrix.config.FIRST_RUN_FILE", tmp_path / ".first_run_done")

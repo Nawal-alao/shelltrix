@@ -1,9 +1,8 @@
-"""Tests d'intégration de la couche ShelltrixClient (proto Matrix).
+"""Integration tests for the ShelltrixClient layer (Matrix proto).
 
-On mocke `nio.AsyncClient` (aucune connexion réseau) pour vérifier les
-comportements réels de la couche ShelltrixClient : politique de sécurité à l'envoi,
-propagation des événements (messages, invites, typing), et gestion des
-erreurs d'upload/send.
+We mock `nio.AsyncClient` (no network connection) to verify the real
+behaviours of the ShelltrixClient layer: send-time security policy, event
+propagation (messages, invites, typing), and upload/send error handling.
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from shelltrix.matrix_client import ShelltrixClient
 
 
 def make_client(**overrides: object) -> ShelltrixClient:
-    """Construit un ShelltrixClient dont le AsyncClient sous-jacent est un mock."""
+    """Builds a ShelltrixClient whose underlying AsyncClient is a mock."""
     creds = Credentials("hs", "@me:hs", "dev1", "token")
     with patch("shelltrix.matrix_client.AsyncClient") as cls:
         inst = cls.return_value
@@ -45,9 +44,9 @@ async def test_send_message_room_send() -> None:
 
 @pytest.mark.asyncio
 async def test_send_security_policy_blocked_devices() -> None:
-    """En salon chiffré avec des appareils non vérifiés, l'envoi est
-    bloqué (LocalProtocolError) et signalé à l'UI — on ne transmet jamais
-    à un destinataire potentiellement compromis."""
+    """In an encrypted room with unverified devices, sending is blocked
+    (LocalProtocolError) and reported to the UI — we never transmit to a
+    potentially compromised recipient."""
     from nio.exceptions import LocalProtocolError
 
     nc = make_client()
@@ -61,7 +60,7 @@ async def test_send_security_policy_blocked_devices() -> None:
 
     nc.on_send_error = on_send_error  # type: ignore[assignment]
     await nc.send_message("!r:hs", "secret")
-    assert reported, "l'échec de sécurité doit être remonté à l'UI"
+    assert reported, "the security failure must be reported to the UI"
     assert reported[0][0] == "!r:hs"
 
 
@@ -76,7 +75,7 @@ async def test_send_network_error_reported() -> None:
 
     nc.on_send_error = on_send_error  # type: ignore[assignment]
     await nc.send_message("!r:hs", "hi")  # type: ignore[arg-type]
-    assert reported, "une erreur réseau doit être remontée à l'UI"
+    assert reported, "a network error must be reported to the UI"
     assert "ConnectionError" in reported[0][1]
 
 
@@ -91,12 +90,12 @@ async def test_handle_invite_for_own_user_only() -> None:
     nc.on_invite = on_invite  # type: ignore[assignment]
 
     room = MagicMock()
-    # Pas pour nous : state_key différent → ignoré
+    # Not for us: different state_key → ignored
     event = MagicMock(state_key="@other:hs", sender="@inviter:hs")
-    # Remplacer _handle_invite pour tester son corps directement via callback
+    # Stand in for _handle_invite to test its body directly via the callback
     await nc._handle_invite(room, event)
     assert nc.client.user_id == "@me:hs"
-    # _handle_invite teste state_key == user_id ; state_key != me → rien
+    # _handle_invite checks state_key == user_id; state_key != me → nothing
     assert fired == []
 
 
@@ -166,17 +165,17 @@ async def test_send_image_missing_file() -> None:
     nc.on_send_error = on_send_error  # type: ignore[assignment]
     await nc.send_image("!r:hs", "/nonexistent/this/file.png")  # type: ignore[arg-type]
     assert reported
-    assert "introuvable" in reported[0][1]
+    assert "File not found" in reported[0][1]
 
 
 @pytest.mark.asyncio
 async def test_room_messages_success_returns_response() -> None:
-    """room_messages() renvoie la réponse nio en cas de succès (scrollback)."""
+    """room_messages() returns the nio response on success (scrollback)."""
     nc = make_client()
     resp = object()
     nc.client.room_messages = AsyncMock(return_value=resp)
-    # Import du type attendu : on simule un RoomMessagesResponse pour le
-    # isinstance dans ShelltrixClient.room_messages.
+    # Import the expected type: we simulate a RoomMessagesResponse for the
+    # isinstance in ShelltrixClient.room_messages.
     from nio import RoomMessagesResponse
 
     resp = MagicMock(spec=RoomMessagesResponse)
@@ -189,16 +188,16 @@ async def test_room_messages_success_returns_response() -> None:
 
 @pytest.mark.asyncio
 async def test_room_messages_error_returns_none() -> None:
-    """room_messages() renvoie None si la réponse n'est pas positive."""
+    """room_messages() returns None if the response is not positive."""
     nc = make_client()
-    nc.client.room_messages = AsyncMock(return_value=MagicMock())  # pas un RoomMessagesResponse
+    nc.client.room_messages = AsyncMock(return_value=MagicMock())  # not a RoomMessagesResponse
     out = await nc.room_messages("!r:hs", limit=40)
     assert out is None
 
 
 @pytest.mark.asyncio
 async def test_room_messages_exception_returns_none() -> None:
-    """room_messages() revient à None si l'appel lève (réseau)."""
+    """room_messages() falls back to None if the call raises (network)."""
     nc = make_client()
     nc.client.room_messages = AsyncMock(side_effect=RuntimeError("offline"))
     out = await nc.room_messages("!r:hs")

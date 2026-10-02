@@ -1,7 +1,7 @@
-"""Tests pour le cache SQLite MessageCache (messages de timeline).
+"""Tests for the SQLite MessageCache (timeline messages).
 
-Cible la persistance / restauration des TimelineEntry par salon et la
-déduplication par event_id, sans toucher au vrai répertoire de config.
+Targets persistence / restoration of TimelineEntry per room and deduplication
+by event_id, without touching the real config directory.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ class TestMessageCache:
         cache = MessageCache("@me:hs", cache_dir=tmp_path)
         cache.upsert_entries("!r:hs", [_entry("$a", time_ms=2000), _entry("$b", time_ms=1000)])
         entries = cache.load_entries("!r:hs")
-        assert [e.event_id for e in entries] == ["$b", "$a"]  # tri chronologique
+        assert [e.event_id for e in entries] == ["$b", "$a"]  # chronological sort
         cache.close()
 
     def test_upsert_dedup_by_event_id(self, tmp_path) -> None:
@@ -100,7 +100,7 @@ class TestMessageCacheSearch:
             "!a:hs",
             [
                 _entry("$1", time_ms=1000, body="Bonjour Alice"),
-                _entry("$2", time_ms=2000, body="Vous cherchez quoi ?"),
+                _entry("$2", time_ms=2000, body="What are you looking for?"),
                 _entry("$3", time_ms=3000, body="alice vint enfin"),
             ],
         )
@@ -122,7 +122,7 @@ class TestMessageCacheSearch:
         cache = self._setup(tmp_path)
         results = cache.search_messages("alice")
         ids = [e.event_id for e in results]
-        # $3 (alice vint, t=3000) avant $1 (Bonjour Alice, t=1000)
+        # $3 (alice vint, t=3000) before $1 (Bonjour Alice, t=1000)
         assert ids == ["$3", "$1"]
         cache.close()
 

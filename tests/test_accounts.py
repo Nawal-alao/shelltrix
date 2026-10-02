@@ -1,4 +1,4 @@
-"""Tests pour le module accounts."""
+"""Tests for the accounts module."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from shelltrix.accounts import (
 
 
 class TestAccountInfo:
-    """Tests pour AccountInfo."""
+    """Tests for AccountInfo."""
 
     def test_to_dict(self) -> None:
         info = AccountInfo(
@@ -54,7 +54,7 @@ class TestAccountInfo:
 
 
 class TestMakeLabel:
-    """Tests pour _make_label()."""
+    """Tests for _make_label()."""
 
     def test_simple_user_id(self) -> None:
         label = _make_label("@alice:matrix.org", "https://matrix.org")
@@ -71,7 +71,7 @@ class TestMakeLabel:
 
 
 class TestAccountManager:
-    """Tests pour AccountManager."""
+    """Tests for AccountManager."""
 
     def test_empty_on_creation(self, tmp_path: Path) -> None:
         with patch("shelltrix.accounts.ACCOUNTS_FILE", tmp_path / "accounts.json"):

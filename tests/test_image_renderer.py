@@ -1,4 +1,4 @@
-"""Tests pour le module image_renderer."""
+"""Tests for the image_renderer module."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from shelltrix.image_renderer import (
 
 
 class TestGuessExtension:
-    """Tests pour _guess_extension()."""
+    """Tests for _guess_extension()."""
 
     def test_png_extension(self) -> None:
         assert _guess_extension("abc123.png") == ".png"
@@ -37,7 +37,7 @@ class TestGuessExtension:
 
 
 class TestIsImageMessage:
-    """Tests pour is_image_message()."""
+    """Tests for is_image_message()."""
 
     def test_detects_marker(self) -> None:
         assert is_image_message("__SHELLTRIX_IMAGE__:/path/to/img.png") is True
@@ -50,7 +50,7 @@ class TestIsImageMessage:
 
 
 class TestRenderImagePlaceholder:
-    """Tests pour render_image_placeholder()."""
+    """Tests for render_image_placeholder()."""
 
     def test_includes_filename(self) -> None:
         result = render_image_placeholder("photo.png")
@@ -66,7 +66,7 @@ class TestRenderImagePlaceholder:
 
 
 class TestRgbHex:
-    """Tests pour _rgb_hex()."""
+    """Tests for _rgb_hex()."""
 
     def test_black(self) -> None:
         assert _rgb_hex(0, 0, 0) == "#000000"
@@ -79,7 +79,7 @@ class TestRgbHex:
 
 
 class TestHasPillow:
-    """Tests pour _has_pillow()."""
+    """Tests for _has_pillow()."""
 
     def test_false_when_pillow_missing(self) -> None:
         with patch.dict("sys.modules", {"PIL": None}):
@@ -91,7 +91,7 @@ class TestHasPillow:
 
 
 class TestRenderImageTextual:
-    """Tests pour render_image_textual()."""
+    """Tests for render_image_textual()."""
 
     def test_none_when_pillow_missing(self) -> None:
         with patch("shelltrix.image_renderer._has_pillow", return_value=False):
@@ -103,7 +103,7 @@ class TestRenderImageTextual:
 
 
 class TestRenderImage:
-    """Tests pour render_image()."""
+    """Tests for render_image()."""
 
     def test_returns_string_always(self) -> None:
         result = render_image("/tmp/missing.png")
@@ -116,7 +116,7 @@ class TestRenderImage:
 
 
 class TestRenderImageTextualReal:
-    """Tests du rendu demi-bloc avec une vraie image (nécessite Pillow)."""
+    """Tests for half-block rendering with a real image (requires Pillow)."""
 
     @staticmethod
     def _skip_if_no_pillow() -> None:
@@ -125,7 +125,7 @@ class TestRenderImageTextualReal:
         except Exception:
             import pytest
 
-            pytest.skip("Pillow non installé")
+            pytest.skip("Pillow not installed")
 
     def test_renders_half_blocks_for_small_image(self) -> None:
         self._skip_if_no_pillow()
@@ -146,7 +146,7 @@ class TestRenderImageTextualReal:
             out = render_image_textual(path, max_width_cols=4)
             assert out is not None
             lines = out.split("\n")
-            assert len(lines) == 2  # 4 rangées → 2 lignes de demi-blocs
+            assert len(lines) == 2  # 4 rows → 2 lines of half-blocks
             assert all("▀" in line for line in lines)
             assert all("on" in line for line in lines)
         finally:
@@ -168,7 +168,7 @@ class TestRenderImageTextualReal:
 
 
 class TestFormatImageMessage:
-    """Tests pour format_image_message()."""
+    """Tests for format_image_message()."""
 
     def test_returns_placeholder_when_download_fails(self) -> None:
         with patch("shelltrix.image_renderer.download_image", return_value=None):

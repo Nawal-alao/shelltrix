@@ -1,4 +1,4 @@
-"""Tests pour le module notifications."""
+"""Tests for the notifications module."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from shelltrix.notifications import is_enabled, notify, CONFIG_FILE
 
 
 class TestIsEnabled:
-    """Tests pour is_enabled()."""
+    """Tests for is_enabled()."""
 
     def test_default_true_when_no_config(self, tmp_path: Path) -> None:
         with patch("shelltrix.notifications.CONFIG_FILE", tmp_path / "config.json"):
@@ -32,7 +32,7 @@ class TestIsEnabled:
 
 
 class TestNotify:
-    """Tests pour notify()."""
+    """Tests for notify()."""
 
     def test_silent_when_disabled(self, tmp_path: Path) -> None:
         config = tmp_path / "config.json"

@@ -1,8 +1,8 @@
-"""Tests pour le scrollback (historique serveur) côté ChatScreen.
+"""Tests for ChatScreen's scrollback (server history).
 
-Cible la conversion des événements d'historique nio en TimelineEntry prêtes à
-être préfixées (`_entries_from_events`) : ordre chronologique, event_id, type
-de message, détection de mention, et placeholder d'image.
+Targets the conversion of nio history events into ready-to-prefix TimelineEntry
+objects (`_entries_from_events`): chronological order, event_id, message type,
+mention detection, and the image placeholder.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ class _StubInnerClient:
 
 
 class _StubClient:
-    """Mini doublure de ShelltrixClient suffisante pour _entries_from_events."""
+    """Mini ShelltrixClient double, enough for _entries_from_events."""
 
     def __init__(self) -> None:
         self.client = _StubInnerClient("@me:hs")
@@ -82,7 +82,7 @@ def test_entries_sorted_chronologically() -> None:
 
 def test_mention_detected_in_history() -> None:
     screen = make_screen()
-    ev = text_event("@alice:hs", "hé @me regarde ça", 1000, "ev1")
+    ev = text_event("@alice:hs", "hey @me look at that", 1000, "ev1")
     entries = screen._entries_from_events("!r:hs", [ev])
     assert entries[0].has_mention is True
 
@@ -109,7 +109,7 @@ def test_own_message_displayed_as_vous() -> None:
     ev = text_event("@me:hs", "mon message", 1000, "ev1")
     entries = screen._entries_from_events("!r:hs", [ev])
     assert entries[0].is_own is True
-    assert entries[0].display_name == "Vous"
+    assert entries[0].display_name == "You"
 
 
 def test_display_name_resolved_from_room() -> None:
@@ -127,16 +127,16 @@ def test_msgtype_preserved() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Réactions dans l'historique
+# Reactions in history
 # ---------------------------------------------------------------------------
 
 
 def reaction_event(sender: str, target: str, key: str, ts: int, event_id: str) -> RoomMessageText:
-    """Annotation `m.reaction`.
+    """`m.reaction` annotation.
 
-    nio la décode en `RoomMessageText` au corps VIDE — c'est exactement ce qui
-    rend le filtre indispensable : sans lui, chaque réaction de l'historique
-    ajoute une ligne blanche dans la timeline.
+    nio decodes it as a `RoomMessageText` with an EMPTY body — which is exactly
+    what makes the filter indispensable: without it, every reaction from the
+    history adds a blank line to the timeline.
     """
     ev = MagicMock(spec=RoomMessageText)
     ev.sender = sender
@@ -188,7 +188,7 @@ def test_history_reactions_are_harvested() -> None:
 
 
 def test_harvest_is_idempotent_for_a_repeated_event() -> None:
-    """La même annotation vue deux fois (sync + pagination) ne compte qu'une fois."""
+    """The same annotation seen twice (sync + pagination) counts only once."""
     screen = make_screen()
     rx = reaction_event("@bob:hs", "ev1", "\U0001f44d", 1100, "ev-r1")
     screen._harvest_reactions("!r:hs", [rx])
@@ -197,7 +197,7 @@ def test_harvest_is_idempotent_for_a_repeated_event() -> None:
 
 
 def test_changed_reaction_replaces_the_previous_key() -> None:
-    """Changer d'emoji ne doit pas laisser l'ancien compteur derrière."""
+    """Changing emoji must not leave the old counter behind."""
     screen = make_screen()
     screen._record_reaction("!r:hs", "ev1", "\U0001f44d", "@bob:hs")
     screen._record_reaction("!r:hs", "ev1", "❤️", "@bob:hs")

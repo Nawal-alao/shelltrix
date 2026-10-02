@@ -1,9 +1,10 @@
-"""Tests pour la reconnexion automatique (backoff exponentiel).
+"""Tests for automatic reconnection (exponential backoff).
 
-Vérifie le contrat du `_run_sync_forever()` de ShelltrixClient : une panne
-réseau (sync() qui lève) ne doit pas faire tomber la tâche pour toujours
-— elle passe en état "offline"/"reconnecting", attend, puis retente ; un
-sync réussi repasse l'état à "online" et remet le backoff à zéro.
+Verifies the contract of ShelltrixClient's `_run_sync_forever()`: a network
+outage (a sync() that raises) must not bring the task down for good — it
+switches to the "offline"/"reconnecting" state, waits, then retries; a
+successful sync flips the state back to "online" and resets the backoff to
+zero.
 """
 
 from __future__ import annotations
@@ -20,14 +21,14 @@ from shelltrix.matrix_client import ShelltrixClient
 
 @pytest.mark.asyncio
 async def test_retries_and_recovers_after_failure() -> None:
-    """Après des échecs successifs, le sync finit par réussir : l'état
-    repasse en "online" et la boucle continue."""
+    """After successive failures, the sync eventually succeeds: the state
+    goes back to "online" and the loop continues."""
     calls = 0
 
     async def flaky_sync(**kwargs) -> object:
         nonlocal calls
         calls += 1
-        # échec réseau les 2 premiers appels, puis succès
+        # network outage on the first 2 calls, then success
         if calls <= 2:
             raise ConnectionError("connection reset")
         return object()
@@ -48,8 +49,8 @@ async def test_retries_and_recovers_after_failure() -> None:
             await nc._run_sync_forever()
 
         task = asyncio.create_task(run())
-        # Laisser la boucle tourner assez longtemps pour passer 2 échecs
-        # (backoff 1s + 2s) puis un succès.
+        # Let the loop run long enough to get past 2 failures
+        # (backoff 1s + 2s) and then a success.
         await asyncio.sleep(3.5)
         task.cancel()
         try:
@@ -63,7 +64,7 @@ async def test_retries_and_recovers_after_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_offline_when_never_connected() -> None:
-    """Tant qu'aucun sync n'a réussi, un échec expose l'état 'offline'."""
+    """As long as no sync has succeeded, a failure exposes the 'offline' state."""
     async def always_fail(**kwargs) -> object:
         raise ConnectionError("down")
 
@@ -75,14 +76,14 @@ async def test_offline_when_never_connected() -> None:
         client_inst.add_to_device_callback = MagicMock()
 
         nc = ShelltrixClient(creds)
-        nc._ever_connected = False  # jamais connecté
+        nc._ever_connected = False  # never connected
 
-        # Premier appel direct : l'exception est avalée par la boucle.
+        # First direct call: the exception is swallowed by the loop.
         async def run() -> None:
             await nc._run_sync_forever()
 
         task = asyncio.create_task(run())
-        # backoff 1s → l'état reste "offline" puis on annule
+        # backoff 1s → the state stays "offline", then we cancel
         await asyncio.sleep(1.2)
         state = nc.sync_state
         task.cancel()
@@ -95,17 +96,17 @@ async def test_offline_when_never_connected() -> None:
 
 
 async def _wait_first_sync(nc: ShelltrixClient, timeout: float = 2.0) -> None:
-    """Attend la fin du premier sync (la boucle, elle, tourne indéfiniment)."""
+    """Waits for the first sync to finish (the loop itself runs indefinitely)."""
     deadline = asyncio.get_running_loop().time() + timeout
     while not nc.first_sync_done:
-        assert asyncio.get_running_loop().time() < deadline, "premier sync non terminé"
+        assert asyncio.get_running_loop().time() < deadline, "first sync not finished"
         await asyncio.sleep(0.01)
 
 
 @pytest.mark.asyncio
 async def test_start_does_not_block_on_first_sync() -> None:
-    """start() rend la main immédiatement : le premier sync part en tâche de
-    fond (sinon l'UI reste invisible pendant les ~10 s du full_state sync)."""
+    """start() returns immediately: the first sync runs as a background task
+    (otherwise the UI stays invisible for the ~10 s of the full_state sync)."""
     gate = asyncio.Event()
 
     async def slow_sync(**kwargs) -> object:
@@ -116,23 +117,23 @@ async def test_start_does_not_block_on_first_sync() -> None:
     with patch("shelltrix.matrix_client.AsyncClient") as mock_client_cls:
         client_inst = mock_client_cls.return_value
         client_inst.sync = AsyncMock(side_effect=slow_sync)
-        client_inst.next_batch = None  # premier sync = full_state
+        client_inst.next_batch = None  # first sync = full_state
         client_inst.add_event_callback = MagicMock()
         client_inst.add_to_device_callback = MagicMock()
 
         nc = ShelltrixClient(creds)
-        nc.load_local_store = lambda: None  # pas de store E2EE sur le disque
+        nc.load_local_store = lambda: None  # no E2EE store on disk
         nc.start()
-        # start() est synchrone et n'attend pas le sync : l'état "syncing"
-        # est visible tout de suite.
+        # start() is synchronous and does not wait for the sync: the "syncing"
+        # state is visible right away.
         assert nc.sync_state == "syncing"
         assert nc._sync_task is not None and not nc._sync_task.done()
 
-        # Le sync ne démarre qu'une fois la boucle d'événements rendue (donc
-        # après le retour de start()) et il était encore en attente ici.
+        # The sync only starts once the event loop has been handed back
+        # (i.e. after start() returns), and it was still waiting here.
         await asyncio.sleep(0)
         assert client_inst.sync.await_count == 1
-        # Sans next_batch en cache, la première passe est un full_state sync.
+        # With no next_batch in cache, the first pass is a full_state sync.
         assert client_inst.sync.await_args.kwargs["full_state"] is True
 
         gate.set()
@@ -143,8 +144,8 @@ async def test_start_does_not_block_on_first_sync() -> None:
 
 @pytest.mark.asyncio
 async def test_first_sync_callback_fires_once() -> None:
-    """Le callback UI est appelé après le premier sync réussi, une seule fois,
-    même si les syncs suivants.aboutissent aussi."""
+    """The UI callback is called after the first successful sync, only once,
+    even if the following syncs succeed too."""
     calls = 0
 
     async def counting_sync(**kwargs) -> object:
@@ -169,7 +170,7 @@ async def test_first_sync_callback_fires_once() -> None:
         nc.on_first_sync = on_first_sync
 
         task = asyncio.create_task(nc._run_sync_forever())
-        await asyncio.sleep(0.2)  # plusieurs itérations de la boucle
+        await asyncio.sleep(0.2)  # several loop iterations
         task.cancel()
         try:
             await task
@@ -183,13 +184,13 @@ async def test_first_sync_callback_fires_once() -> None:
 
 @pytest.mark.asyncio
 async def test_ui_error_in_first_sync_does_not_kill_sync_loop() -> None:
-    """Un callback UI qui lève ne doit pas être pris pour une panne réseau :
-    la boucle de sync continue (état "online", pas de backoff "offline")."""
+    """A UI callback that raises must not be mistaken for a network outage:
+    the sync loop continues (state "online", no "offline" backoff)."""
     async def ok_sync(**kwargs) -> object:
         return object()
 
     async def boom() -> None:
-        raise RuntimeError("bug de rendu")
+        raise RuntimeError("render bug")
 
     creds = Credentials("hs", "@u:hs", "dev", "token")
     with patch("shelltrix.matrix_client.AsyncClient") as mock_client_cls:
@@ -216,13 +217,13 @@ async def test_ui_error_in_first_sync_does_not_kill_sync_loop() -> None:
 
 
 class _HostApp(App):
-    """App vide : héberge la ChatScreen pour un test de montage."""
+    """Empty app: hosts the ChatScreen for a mounting test."""
 
 
 @pytest.mark.asyncio
 async def test_chat_screen_populates_rooms_on_first_sync() -> None:
-    """La ChatScreen s'affiche sans attendre le sync (liste vide + état
-    "syncing…"), puis la liste des salons se remplit au premier sync."""
+    """The ChatScreen displays without waiting for the sync (empty list +
+    "syncing…" state), then the room list fills in on the first sync."""
     from shelltrix.screens.chat import ChatScreen
 
     creds = Credentials("hs", "@u:hs", "dev", "token")
@@ -231,7 +232,7 @@ async def test_chat_screen_populates_rooms_on_first_sync() -> None:
         gate = asyncio.Event()
 
         async def gated_sync(**kwargs: object) -> object:
-            await gate.wait()  # le sync ne répond pas tout de suite
+            await gate.wait()  # the sync does not answer right away
             return object()
 
         client_inst.sync = AsyncMock(side_effect=gated_sync)
@@ -251,13 +252,13 @@ async def test_chat_screen_populates_rooms_on_first_sync() -> None:
         async with app.run_test() as pilot:
             await app.push_screen(ChatScreen(nc))
             await pilot.pause()
-            # Monté et peint : le sync est en cours, la liste est vide.
+            # Mounted and painted: the sync is running, the list is empty.
             assert nc.sync_state == "syncing"
             assert len(nc.rooms()) == 0
             assert nc.first_sync_done is False
 
             gate.set()
-            # Le sync répond : la liste se remplit sans réécrire la méthode.
+            # The sync answers: the list fills in without rewriting the method.
             room = MagicMock()
             room.room_id = "!r:hs"
             room.display_name = "Matrix HQ"

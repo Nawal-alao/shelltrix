@@ -1,8 +1,8 @@
-"""Tests pour le rendu de la timeline conversationnelle (groupage par
-expéditeur, séparateurs temporels et de date, réponses, réactions).
+"""Tests for rendering the conversation timeline (grouping by sender,
+time and date separators, replies, reactions).
 
-Cible la logique pure de `shelltrix.formatting` (`format_timeline_blocks` /
-`format_timeline_entries`, replies, dates, réactions), sans état Textual.
+Targets the pure logic of `shelltrix.formatting` (`format_timeline_blocks` /
+`format_timeline_entries`, replies, dates, reactions), with no Textual state.
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ class TestFormatTimelineEntries:
         assert ctx.last_sender == "@a:hs"
 
     def test_same_sender_continuation(self) -> None:
-        """Deux messages consécutifs du même expéditeur → un seul bloc."""
+        """Two consecutive messages from the same sender → a single block."""
         lines, ctx = render(
             [entry("@a:hs", "one"), entry("@a:hs", "two")]
         )
@@ -93,7 +93,7 @@ class TestFormatTimelineEntries:
         lines, _ = render(
             [entry("@a:hs", "one"), entry("@b:hs", "two")]
         )
-        # Un header par expéditeur ; aucun nom répété sur les lignes de corps
+        # One header per sender; no name repeated on the body lines
         assert lines == [
             "        HEAD(@a:hs)",
             "        one",
@@ -102,22 +102,22 @@ class TestFormatTimelineEntries:
         ]
 
     def test_same_sender_time_gap_separator(self) -> None:
-        """Silence > 5 min → séparateur temporel + nouveau bloc."""
+        """Silence > 5 min → time separator + new block."""
         t0 = 1_700_000_000_000
         entries = [
             entry("@a:hs", "before", time_ms=t0),
             entry("@a:hs", "later", time_ms=t0 + TIME_GAP_SEPARATOR_MS + 1),
         ]
         lines, _ = render(entries)
-        # Un séparateur temporel apparaît avant le message suivant
+        # A time separator appears before the next message
         sep_lines = [ln for ln in lines if "─" in ln]
-        assert sep_lines, "séparateur temporel manquant"
-        # ... puis un nouveau header de bloc pour le même expéditeur
+        assert sep_lines, "time separator missing"
+        # ... then a new block header for the same sender
         assert lines[-2] == "        HEAD(@a:hs)"
         assert lines[-1] == "        later"
 
     def test_sender_returns_after_another_opens_new_block(self) -> None:
-        """A, B, A : le retour de A ouvre un nouveau bloc."""
+        """A, B, A: A's return opens a new block."""
         lines, _ = render(
             [
                 entry("@a:hs", "1"),
@@ -134,28 +134,28 @@ class TestFormatTimelineEntries:
         assert lines[0] == "        HEAD(<me>)"
 
     def test_continues_existing_context(self) -> None:
-        """Le rendu incrémental repart du contexte fourni."""
+        """Incremental rendering starts from the provided context."""
         ctx = TimelineContext(last_sender="@a:hs", last_time_ms=100)
         lines, new_ctx = render([entry("@a:hs", "more", time_ms=100)], ctx=ctx)
-        # Continuation : pas de nouveau header
+        # Continuation: no new header
         assert lines == ["        more"]
         assert new_ctx.last_sender == "@a:hs"
 
     def test_category_separator_resets_group(self) -> None:
-        """Un changement d'expéditeur après un retour crée un header."""
+        """A sender change after a return creates a header."""
         ctx = TimelineContext(last_sender="@b:hs", last_time_ms=100)
         lines, _ = render([entry("@a:hs", "new", time_ms=100)], ctx=ctx)
         assert lines[0] == "        HEAD(@a:hs)"
 
 
 class TestBodyMentionsUser:
-    """Tests pour body_mentions_user()."""
+    """Tests for body_mentions_user()."""
 
     def test_matches_full_user_id(self) -> None:
         assert body_mentions_user("regarde @alice:matrix.org stp", "@alice:matrix.org")
 
     def test_matches_localpart(self) -> None:
-        assert body_mentions_user("hé @alice tu peux ?", "@alice:matrix.org")
+        assert body_mentions_user("hey @alice can you?", "@alice:matrix.org")
 
     def test_no_mention(self) -> None:
         assert not body_mentions_user("salut tout le monde", "@alice:matrix.org")
@@ -167,11 +167,11 @@ class TestBodyMentionsUser:
         assert not body_mentions_user("salut @alice", "")
 
     def test_similar_partial_name_not_mentioned(self) -> None:
-        assert not body_mentions_user("parle à Alice en général", "@alice:matrix.org")
+        assert not body_mentions_user("talk to Alice in general", "@alice:matrix.org")
 
 
 class TestHighlightMentions:
-    """Tests pour highlight_mentions() : mise en évidence des mentions."""
+    """Tests for highlight_mentions(): mention highlighting."""
 
     @staticmethod
     def _accent() -> str:
@@ -186,7 +186,7 @@ class TestHighlightMentions:
 
     def test_localpart_highlighted(self) -> None:
         a = self._accent()
-        out = highlight_mentions("hé @alice tu peux ?", "@alice:matrix.org")
+        out = highlight_mentions("hey @alice can you?", "@alice:matrix.org")
         assert f"[bold][{a}]@alice[/{a}][/bold]" in out
 
     def test_ignored_when_no_user_id(self) -> None:
@@ -209,7 +209,7 @@ class TestHighlightMentions:
 
 
 class TestMessageBlocks:
-    """Le rendu en blocs (un widget par message) et ses séparateurs."""
+    """Block rendering (one widget per message) and its separators."""
 
     def _blocks(self, entries):
         return format_timeline_blocks(entries, TimelineContext(), header_for=head)
@@ -223,7 +223,7 @@ class TestMessageBlocks:
         blocks, _ = self._blocks([entry("@a:hs", "un"), entry("@a:hs", "deux")])
         assert blocks[0].is_continuation is False
         assert blocks[1].is_continuation is True
-        # Pas d'en-tête dupliqué sur la continuation
+        # No duplicated header on the continuation
         assert all("HEAD(" not in ln for ln in blocks[1].lines)
 
     def test_gap_before_only_after_silence(self) -> None:
@@ -250,7 +250,7 @@ class TestMessageBlocks:
         assert blocks[1].date_before is True
 
     def test_date_change_alone_triggers_separator(self) -> None:
-        """Midi-minuit : 2 minutes d'écart, mais on change de jour."""
+        """Midnight: 2 minutes apart, but the day changes."""
         minuit = 24 * 60 * 60 * 1000
         t0 = 1_700_000_000_000
         blocks, _ = self._blocks(
@@ -259,12 +259,12 @@ class TestMessageBlocks:
                 entry("@a:hs", "00h01", time_ms=t0 + minuit - 120_000 + 120_000),
             ]
         )
-        # 24h d'écart : les deux repères peuvent se présenter
+        # 24h apart: both markers can be present
         assert blocks[1].date_before is True
         assert blocks[1].gap_before is True
 
     def test_flatten_matches_blocks(self) -> None:
-        """La vue aplatie et les blocs doivent rester cohérents."""
+        """The flattened view and the blocks must stay consistent."""
         t0 = 1_700_000_000_000
         entries = [
             entry("@a:hs", "un", time_ms=t0),
@@ -296,17 +296,17 @@ class TestReplies:
         e.reply_to_name = "Tim"
         blocks, _ = format_timeline_blocks([e], TimelineContext(), header_for=head)
         lines = blocks[0].lines
-        assert "Tim" in lines[-2], "la citation doit précéder le corps"
+        assert "Tim" in lines[-2], "the quote must come before the body"
         assert lines[-1].endswith("coucou")
 
     def test_reply_name_is_escaped(self) -> None:
         e = entry("@a:hs", "x")
-        e.reply_to_name = "[bold]piège"
+        e.reply_to_name = "[bold]trap"
         out = reply_quote_line(e)
-        # Le crochet doit être échappé (Rich: `\[`), sinon un display_name
-        # malveillant s'injecterait en balise et maquillerait le message.
-        assert "\\[bold]piège" in out
-        # aucune balise NON échappée ne doit subsister
+        # The bracket must be escaped (Rich: `\[`), otherwise a malicious
+        # display_name would inject itself as a tag and disguise the message.
+        assert "\\[bold]trap" in out
+        # no UNESCAPED tag must remain
         assert "[bold]" not in out.replace("\\[", "")
 
     def test_target_from_modern_form(self) -> None:
@@ -328,13 +328,13 @@ class TestReplies:
         assert reply_target_of(content) == ""
 
     def test_fallback_round_trip(self) -> None:
-        """Ce qu'on envoie doit pouvoir être retiré à la réception."""
+        """What we send must be strippable on receipt."""
         sent = reply_fallback("je suis d'accord", "@tim:hs")
         assert sent == "<@tim:hs> je suis d'accord"
         assert strip_reply_fallback(sent, "@tim:hs") == "je suis d'accord"
 
     def test_fallback_kept_for_other_author(self) -> None:
-        """Un préfixe d'un AUTRE auteur n'est pas un repli : on n'y touche pas."""
+        """A prefix from ANOTHER author is not a fallback: we leave it alone."""
         body = "<@alice:hs> bonjour"
         assert strip_reply_fallback(body, "@tim:hs") == body
 
@@ -355,7 +355,7 @@ class TestDateSeparators:
         old = day_label(now - 400 * 24 * 60 * 60 * 1000, now_ms=now)
         assert "/" in old and not old.isalpha()
 
-    def test_recent_days_use_french_weekday_names(self) -> None:
+    def test_recent_days_use_weekday_names(self) -> None:
         # `strftime("%A")` would follow the process locale and could
         # disagree with the UI; weekday names are pinned like the rest of it.
         # 2024-01-01 is a Monday.
@@ -420,7 +420,7 @@ class TestAnnotationOf:
         assert annotation_of(content) == ("$m1", "👍")
 
     def test_reply_is_not_an_annotation(self) -> None:
-        """Réponses et réactions partagent `m.relates_to` : seul rel_type sépare."""
+        """Replies and reactions share `m.relates_to`: only rel_type tells them apart."""
         content = {
             "m.relates_to": {
                 "rel_type": "m.in_reply_to",
@@ -462,7 +462,7 @@ class TestReactionCounts:
         assert reaction_counts({}) == {}
 
     def test_one_sender_never_counts_twice(self) -> None:
-        """La spec n'autorise qu'une réaction par auteur et par message."""
+        """The spec allows only one reaction per author and per message."""
         assert reaction_counts({"@a:hs": "👍"}) == {"👍": 1}
 
     def test_change_of_mind_replaces_the_key(self) -> None:
