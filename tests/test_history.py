@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 from nio import RoomMessageImage, RoomMessageText
 
+from shelltrix.formatting import reaction_counts
 from shelltrix.screens.chat import ChatScreen
 
 
@@ -123,3 +124,88 @@ def test_msgtype_preserved() -> None:
     ev = text_event("@bob:hs", "* action", 1000, "ev1", msgtype="m.emote")
     entries = screen._entries_from_events("!r:hs", [ev])
     assert entries[0].msgtype == "m.emote"
+
+
+# ---------------------------------------------------------------------------
+# Réactions dans l'historique
+# ---------------------------------------------------------------------------
+
+
+def reaction_event(sender: str, target: str, key: str, ts: int, event_id: str) -> RoomMessageText:
+    """Annotation `m.reaction`.
+
+    nio la décode en `RoomMessageText` au corps VIDE — c'est exactement ce qui
+    rend le filtre indispensable : sans lui, chaque réaction de l'historique
+    ajoute une ligne blanche dans la timeline.
+    """
+    ev = MagicMock(spec=RoomMessageText)
+    ev.sender = sender
+    ev.body = ""
+    ev.server_timestamp = ts
+    ev.event_id = event_id
+    ev.msgtype = "m.text"
+    ev.source = {
+        "content": {
+            "msgtype": "m.text",
+            "body": "",
+            "m.relates_to": {
+                "rel_type": "m.annotation",
+                "event_id": target,
+                "key": key,
+            },
+        }
+    }
+    return ev
+
+
+def test_annotation_never_becomes_a_blank_message() -> None:
+    screen = make_screen()
+    chunk = [
+        text_event("@alice:hs", "premier", 1000, "ev1"),
+        reaction_event("@bob:hs", "ev1", "\U0001f44d", 1100, "ev-r1"),
+        text_event("@bob:hs", "deuxieme", 1200, "ev2"),
+    ]
+    entries = screen._entries_from_events("!r:hs", chunk)
+    assert [e.event_id for e in entries] == ["ev1", "ev2"]
+    assert all(e.body.strip() for e in entries)
+
+
+def test_history_reactions_are_harvested() -> None:
+    screen = make_screen()
+    chunk = [
+        text_event("@alice:hs", "premier", 1000, "ev1"),
+        reaction_event("@bob:hs", "ev1", "\U0001f44d", 1100, "ev-r1"),
+        reaction_event("@ann:hs", "ev1", "\U0001f44d", 1200, "ev-r2"),
+        reaction_event("@bob:hs", "ev2", "❤️", 1300, "ev-r3"),
+    ]
+    seen = screen._harvest_reactions("!r:hs", chunk)
+    assert seen == 3
+    assert screen._reactions[("!r:hs", "ev1")] == {
+        "@bob:hs": "\U0001f44d",
+        "@ann:hs": "\U0001f44d",
+    }
+    assert screen._reactions[("!r:hs", "ev2")] == {"@bob:hs": "❤️"}
+
+
+def test_harvest_is_idempotent_for_a_repeated_event() -> None:
+    """La même annotation vue deux fois (sync + pagination) ne compte qu'une fois."""
+    screen = make_screen()
+    rx = reaction_event("@bob:hs", "ev1", "\U0001f44d", 1100, "ev-r1")
+    screen._harvest_reactions("!r:hs", [rx])
+    screen._harvest_reactions("!r:hs", [rx])
+    assert screen._reactions[("!r:hs", "ev1")] == {"@bob:hs": "\U0001f44d"}
+
+
+def test_changed_reaction_replaces_the_previous_key() -> None:
+    """Changer d'emoji ne doit pas laisser l'ancien compteur derrière."""
+    screen = make_screen()
+    screen._record_reaction("!r:hs", "ev1", "\U0001f44d", "@bob:hs")
+    screen._record_reaction("!r:hs", "ev1", "❤️", "@bob:hs")
+    bucket = screen._reactions[("!r:hs", "ev1")]
+    assert bucket == {"@bob:hs": "❤️"}
+    assert reaction_counts(bucket) == {"❤️": 1}
+
+
+def test_harvest_ignores_events_without_a_target() -> None:
+    screen = make_screen()
+    assert screen._harvest_reactions("!r:hs", [text_event("@a:hs", "hi", 1, "ev1")]) == 0

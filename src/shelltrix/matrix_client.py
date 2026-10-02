@@ -23,6 +23,7 @@ from nio import (
     KeyVerificationStart,
     LoginResponse,
     MatrixRoom,
+    RoomMessage,
     RoomMessageImage,
     RoomMessageText,
     TypingNoticeEvent,
@@ -42,6 +43,8 @@ InviteHandler = Callable[[str, MatrixRoom, str], Awaitable[None]]
 SasRequestHandler = Callable[[str, str, str, list[tuple[str, str]]], Awaitable[None]]
 # Échec d'envoi (ex. appareils non vérifiés dans un salon chiffré) : (room_id, message)
 SendErrorHandler = Callable[[str, str], Awaitable[None]]
+# Réaction reçue : (room, event_id du message cible, clé emoji, sender)
+ReactionHandler = Callable[[MatrixRoom, str, str, str], Awaitable[None]]
 # Premier sync terminé : l'UI peut rafraîchir sa liste de salons.
 FirstSyncHandler = Callable[[], Awaitable[None]]
 
@@ -57,6 +60,7 @@ class ShelltrixClient:
     on_invite: InviteHandler | None = None
     on_sas_request: SasRequestHandler | None = None
     on_send_error: SendErrorHandler | None = None
+    on_reaction: ReactionHandler | None = None
     # Premier sync terminé : l'UI rafraîchit alors sa liste de salons (les
     # salons n'arrivent qu'avec la réponse du sync, pas au montage).
     on_first_sync: FirstSyncHandler | None = None
@@ -86,6 +90,7 @@ class ShelltrixClient:
 
         self.client.add_event_callback(self._handle_message, RoomMessageText)
         self.client.add_event_callback(self._handle_image, RoomMessageImage)
+        self.client.add_event_callback(self._handle_reaction, RoomMessage)
         self.client.add_event_callback(self._handle_typing, TypingNoticeEvent)
         self.client.add_event_callback(self._handle_invite, InviteMemberEvent)
         self.client.add_to_device_callback(
@@ -285,6 +290,45 @@ class ShelltrixClient:
             },
         )
 
+    async def fetch_reactions(
+        self, room_id: str, event_id: str
+    ) -> dict[str, str]:
+        """Relit les réactions d'un message via `/relations`.
+
+        Filet de sécurité : l'historique paginé contient normalement les
+        annotations, mais un message lu depuis le cache (redémarrage, hors
+        ligne) n'en a pas. Cette requête est donc la seule façon de les
+        retrouver à la demande. Renvoie `{sender: emoji}` — la forme canonique
+        de l'index, qui applique déjà les doublons et les changements d'emoji.
+
+        L'utilisateur n'a qu'une réaction par message : `/relations` renvoie
+        l'état courant, pas l'historique des retraits, ce qui évite d'avoir à
+        décompter les annulations.
+        """
+        from nio.api import RelationshipType
+
+        from .formatting import annotation_of
+
+        by_sender: dict[str, str] = {}
+        async for event in self.client.room_get_event_relations(
+            room_id,
+            event_id,
+            rel_type=RelationshipType.annotation,
+        ):
+            sender = getattr(event, "sender", "") or ""
+            if not sender:
+                continue
+            # Selon le serveur et l'âge de l'annotation, la relation arrive
+            # soit en `ReactionEvent` (`.key`), soit en `RoomMessageText` au
+            # corps vide : on lit les deux formes.
+            key = getattr(event, "key", "") or ""
+            if not key:
+                content = getattr(event, "source", {}).get("content", {})
+                _target, key = annotation_of(content)
+            if key:
+                by_sender[sender] = key
+        return by_sender
+
     async def part_room(self, room_id: str, message: str | None = None) -> None:
         """Commande /quit : quitte le salon (message d'adieu optionnel)."""
         if message:
@@ -397,6 +441,26 @@ class ShelltrixClient:
     async def _handle_image(self, room: MatrixRoom, event: RoomMessageImage) -> None:
         if self.on_image is not None:
             await self.on_image(room, event)
+
+    async def _handle_reaction(self, room: MatrixRoom, event: RoomMessage) -> None:
+        """Relaie les `m.reaction` (réponses en emoji) à l'UI.
+
+        On écoute le type parent `RoomMessage` plutôt que la classe dédiée :
+        ainsi le callback ne déclenche que sur les annotations, qui portent
+        `m.relates_to` en `m.annotation` — sans quoi on serait notifié de
+        TOUS les messages.
+        """
+        if self.on_reaction is None:
+            return
+        content = getattr(event, "source", {}).get("content", {})
+        relates = content.get("m.relates_to")
+        if not isinstance(relates, dict) or relates.get("rel_type") != "m.annotation":
+            return
+        target = relates.get("event_id")
+        key = relates.get("key")
+        if not isinstance(target, str) or not isinstance(key, str) or not key:
+            return
+        await self.on_reaction(room, target, key, getattr(event, "sender", ""))
 
     async def _handle_typing(self, room: MatrixRoom, event: TypingNoticeEvent) -> None:
         if self.on_typing is not None:

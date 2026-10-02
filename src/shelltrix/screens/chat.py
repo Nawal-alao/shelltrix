@@ -38,6 +38,9 @@ from ..formatting import (
     format_date_separator,
     format_timeline_blocks,
     highlight_mentions,
+    annotation_of,
+    reaction_counts,
+    reaction_summary,
     reply_fallback,
     reply_target_of,
     strip_reply_fallback,
@@ -102,6 +105,14 @@ class ChatScreen(Screen):
         # par une reply (« en réponse à X »). Vide tant qu'un salon n'a pas
         # été rendu.
         self._reply_index: dict[str, dict[str, str]] = {}
+        # Réactions : (room_id, event_id du message) → {sender: emoji}. On
+        # mémorise l'AUTEUR plutôt qu'un compteur, ce qui rend les doublons
+        # structurellement impossibles (la spec n'autorise qu'une réaction par
+        # personne et par message : changer d'emoji remplace l'ancien) et
+        # permet de charger les réactions de l'historique aussi bien que du
+        # live. Volatiles par choix (non persistées) : elles se reconstruisent
+        # en relisant la page d'historique à l'ouverture du salon.
+        self._reactions: dict[tuple[str, str], dict[str, str]] = {}
         # Dernier event_id reçu par salon : sert à la commande /react.
         self.last_event_id: dict[str, str] = {}
         # Dernière URL aperçue par salon : sert à la commande "ouvrir le lien".
@@ -170,6 +181,7 @@ class ChatScreen(Screen):
         self.client.on_invite = self._show_invite_dialog
         self.client.on_sas_request = self._show_sas_dialog
         self.client.on_send_error = self._on_send_error
+        self.client.on_reaction = self._handle_reaction
         # Branché AVANT start() : le premier sync part en tâche de fond, il
         # faut donc que le callback soit en place pour ne pas rater la
         # publication de la liste des salons.
@@ -410,7 +422,7 @@ class ChatScreen(Screen):
         widgets: list[Widget] = []
         for block in blocks:
             widgets.extend(self._prefix_widgets(block))
-            widgets.append(self._message_widget(block))
+            widgets.append(self._message_widget(room_id, block))
         timeline.remove_children()
         timeline.mount(*widgets)
         if scroll_end:
@@ -437,14 +449,18 @@ class ChatScreen(Screen):
         ts = f"{entry.timestamp} " if entry.timestamp else ""
         return f"[dim]{ts}{'─' * 36}[/dim]"
 
-    def _message_widget(self, block: MessageBlock) -> MessageView:
-        """Construit le widget d'un message, replié si son corps est long.
+    def _message_widget(self, room_id: str, block: MessageBlock) -> MessageView:
+        """Construit le widget d'un message (réactions + repli si besoin).
 
         Le corps est passé tel quel : son indentation de gouttière est appliquée
         par `MessageView` en Padding, ce qui la conserve sur les lignes de
         continuation après habillage (indenter la chaîne ne les atteindrait pas).
         """
-        return MessageView(block, collapsed=self._is_long(block))
+        return MessageView(
+            block,
+            reactions=self._reactions_markup(room_id, block.entry.event_id),
+            collapsed=self._is_long(block),
+        )
 
     def _is_long(self, block: MessageBlock) -> bool:
         """Un message est replié s'il dépasse le seuil de lignes VISIBLES.
@@ -560,7 +576,12 @@ class ChatScreen(Screen):
                 return
             timeline = self.query_one("#timeline", VerticalScroll)
             prev_scroll = timeline.scroll_y
-            entries = self._entries_from_events(room_id, list(resp.chunk))
+            events = list(resp.chunk)
+            # Les réactions voyagent dans la même page que les messages : on les
+            # récolte avant de construire les entrées, sinon l'historique
+            # s'afficherait sans aucun compteur.
+            self._harvest_reactions(room_id, events)
+            entries = self._entries_from_events(room_id, events)
             existing_ids = {e.event_id for e in self.message_log.get(room_id, [])}
             added = [
                 e for e in entries if e.event_id and e.event_id not in existing_ids
@@ -627,6 +648,11 @@ class ChatScreen(Screen):
 
         out: list[TimelineEntry] = []
         for ev in events:
+            # Une annotation `m.reaction` est un `RoomMessageText` au corps vide :
+            # sans ce filtre, chaque réaction de l'historique ajouterait une
+            # ligne BLANCHE dans la timeline.
+            if annotation_of(getattr(ev, "source", {}).get("content", {}))[0]:
+                continue
             try:
                 raw_ts = getattr(ev, "server_timestamp", 0) or 0
                 if isinstance(ev, RoomMessageImage):
@@ -794,6 +820,7 @@ class ChatScreen(Screen):
     SLASH_HELP = {
         "/me <text>": "send an action (m.emote, rendered in italic)",
         "/react <emoji>": "react to the last received message",
+        "/reactions [event_id]": "reload a message's reactions from the server",
         "/reply <text>": "reply to the last received message",
         "/join <#alias>": "join a room by alias",
         "/sendimg <path>": "send an image from disk",
@@ -808,6 +835,7 @@ class ChatScreen(Screen):
     SLASH_DESC = {
         "/me": "send an action",
         "/react": "react to the last message",
+        "/reactions": "reload reactions",
         "/reply": "reply to the last message",
         "/join": "join a room",
         "/sendimg": "send an image",
@@ -841,6 +869,8 @@ class ChatScreen(Screen):
                 self.app.notify("No message received to react to in this room")
                 return
             await self.client.react_to(room_id, event_id, arg)
+        elif cmd == "/reactions":
+            await self._cmd_refresh_reactions(room_id, arg)
         elif cmd == "/reply":
             if not arg:
                 self.app.notify("/reply <text>: a reply text is required", severity="error")
@@ -1170,7 +1200,7 @@ class ChatScreen(Screen):
         self._timeline_ctx[room_id] = ctx
         timeline = self.query_one("#timeline", VerticalScroll)
         widgets: list[Widget] = [*self._prefix_widgets(blocks[0])]
-        widgets.append(self._message_widget(blocks[0]))
+        widgets.append(self._message_widget(room_id, blocks[0]))
         timeline.mount(*widgets)
 
     def _notify_incoming(
@@ -1197,6 +1227,12 @@ class ChatScreen(Screen):
 
     async def _handle_incoming_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
         me = self.client.client.user_id
+        # Une réaction est un `RoomMessageText` au corps vide, et nio la fait
+        # aussi passer par ce callback : sans ce filtre, chaque emoji reçu
+        # ajouterait un message fantôme vide dans la timeline. Elle est traitée
+        # par `_handle_reaction`.
+        if annotation_of(getattr(event, "source", {}).get("content", {}))[0]:
+            return
         own = event.sender == me
         raw = event.body or ""
         # Reply : on lit la relation pour savoir quel message est cité, et on
@@ -1298,6 +1334,112 @@ class ChatScreen(Screen):
             elif result:
                 timeline.mount(Static(f"        {result}"))
 
+    async def _handle_reaction(
+        self, room: MatrixRoom, target_id: str, key: str, sender: str
+    ) -> None:
+        """Enregistre une réaction et rafraîchit le compteur du message visé.
+
+        Réaction ENVOYÉE EN DIRECT (sync). L'historique passe par
+        `_harvest_reactions`, qui construit le même index.
+        """
+        me = self.client.client.user_id
+        if sender == me:
+            # On ne compte pas notre propre envoi : le serveur le réémet dans le
+            # sync alors qu'on l'a déjà appliqué. Re-Reacter remplace la clé
+            # précédente du même auteur au lieu de s'y ajouter.
+            return
+        self._record_reaction(room.room_id, target_id, key, sender)
+        if room.room_id != self.active_room_id:
+            return
+        for view in self.query_one("#timeline", VerticalScroll).query(MessageView):
+            if view.event_id == target_id:
+                view.add_reaction(self._reactions_markup(room.room_id, target_id))
+                return
+
+    def _record_reaction(
+        self, room_id: str, target_id: str, key: str, sender: str
+    ) -> None:
+        """Mémorise une réaction et rafraîchit son affichage si le salon est vu.
+
+        Point d'entrée unique pour le live et l'historique : les deux écrivent
+        dans le même index, donc un même `event_id` reçu deux fois ne compte
+        qu'une fois.
+        """
+        self._reactions.setdefault((room_id, target_id), {})[sender] = key
+        if room_id != self.active_room_id:
+            return
+        for view in self.query_one("#timeline", VerticalScroll).query(MessageView):
+            if view.event_id == target_id:
+                view.add_reaction(self._reactions_markup(room_id, target_id))
+                return
+
+    def _harvest_reactions(self, room_id: str, events: list) -> int:
+        """Récupère les réactions contenues dans une page d'historique.
+
+        `/messages` renvoie la TIMELINE complète : les annotations y sont
+        intercalées entre les messages qu'elles concernent. Sans cette lecture,
+        tout l'historique reactivity était perdu — les compteurs n'apparaissaient
+        qu'après un redémarrage du client. Renvoie le nombre de réactions vues.
+        """
+        seen = 0
+        for ev in events:
+            target, key = annotation_of(getattr(ev, "source", {}).get("content", {}))
+            sender = getattr(ev, "sender", "") or ""
+            if not target or not sender:
+                continue
+            self._record_reaction(room_id, target, key, sender)
+            seen += 1
+        return seen
+
+    def _default_reaction_target(self, room_id: str) -> str:
+        """Message visé par défaut : le plus récemment AFFICHÉ.
+
+        `last_event_id` ne suit que les messages reçus en direct ; après un
+        rechargement depuis le cache il est vide et la commande neoramaît
+        aucune cible. Le dernier élément de `message_log` est, lui, toujours
+        le message du bas de la timeline.
+        """
+        entries = self.message_log.get(room_id, [])
+        if entries:
+            return entries[-1].event_id or ""
+        return self.last_event_id.get(room_id, "")
+
+    async def _cmd_refresh_reactions(self, room_id: str, arg: str) -> None:
+        """`/reactions [event_id]` : relit les réactions d'un message.
+
+        L'historique paginé fournit normalement les réactions, mais un message
+        venu du cache (redémarrage, hors ligne) n'en a aucune. Cette commande
+        interroge `/relations` pour le message visé — par défaut le dernier
+        reçu — et met les compteurs à jour.
+        """
+        event_id = arg or self._default_reaction_target(room_id)
+        if not event_id:
+            self.app.notify("No message to load reactions for", severity="error")
+            return
+        if event_id not in {e.event_id for e in self.message_log.get(room_id, [])}:
+            self.app.notify("That message is not loaded in this room", severity="warning")
+            return
+        try:
+            by_sender = await self.client.fetch_reactions(room_id, event_id)
+        except Exception as exc:  # réseau / homeserver old
+            self.app.notify(f"Could not load reactions: {exc}", severity="error")
+            return
+        bucket = self._reactions.setdefault((room_id, event_id), {})
+        # `/relations` renvoie l'état COURENT : on remplace, sinon une réaction
+        # retirée depuis le dernier chargement resterait affichée.
+        bucket.clear()
+        bucket.update(by_sender)
+        for view in self.query_one("#timeline", VerticalScroll).query(MessageView):
+            if view.event_id == event_id:
+                view.add_reaction(self._reactions_markup(room_id, event_id))
+                break
+        counts = reaction_counts(bucket)
+        self.app.notify(
+            "Reactions loaded: " + (" ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "none")
+            if counts
+            else "No reactions on that message"
+        )
+
     async def _show_invite_dialog(
         self, room_id: str, room: MatrixRoom, inviter: str
     ) -> None:
@@ -1327,6 +1469,7 @@ class ChatScreen(Screen):
         self.message_log.pop(self.active_room_id, None)
         self._timeline_ctx.pop(self.active_room_id, None)
         self._reply_index.pop(self.active_room_id, None)
+        self._reactions = {k: v for k, v in self._reactions.items() if k[0] != self.active_room_id}
         self.unread[self.active_room_id] = 0
         self._cache.clear_room(self.active_room_id)
         self.query_one("#timeline", VerticalScroll).remove_children()
