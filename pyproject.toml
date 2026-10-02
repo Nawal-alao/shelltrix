@@ -1,7 +1,7 @@
 [project]
 name = "shelltrix"
 version = "1.0.0"
-description = "Un client Matrix TUI premium, en Python, basé sur matrix-nio + Textual."
+description = "A premium Matrix TUI client, in Python, built on matrix-nio + Textual."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

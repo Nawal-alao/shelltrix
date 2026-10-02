@@ -1,128 +1,119 @@
 # Changelog
 
-Toutes les modifications notables de shelltrix. Le format suit
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), et le versionnage
-respecte [SemVer](https://semver.org/).
+All notable changes to shelltrix. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning adheres to
+[SemVer](https://semver.org/).
 
 ## [Unreleased]
 
 ## [1.0.0] - 2026-10-02
 
 ### Added
-- **Réponses** : la commande `/reply` répond au dernier message reçu dans le
-  salon courant. Le message envoyé porte le `m.relates_to` prévu par la spec
-  Matrix (`m.in_reply_to`), avec un repli `↪ Nom` quand la cible est inconnue
-  ou hors cache. Le message cité est restitué depuis l'historique et affiché
-  dans le message qui répond.
-- **Réactions** : `/reactions` liste les réactions d'un message ; la commande
-  `/react <emoji>` en ajoute une. Le total est affiché sous le message et
-  rafraîchi à chaud, ou reconstruit depuis l'historique au rechargement d'un
-  salon.
-- **Timeline en widgets** : chaque message est un widget `MessageView` plutôt
-  qu'une ligne de `RichLog`. Les messages longs sont repliés après quelques
-  lignes (« voir plus » pour les déplier), l'heure s'affiche dans une gouttière
-  à gauche, et un séparateur de jour (`aujourd'hui`, `hier`, `lundi 4 mars`)
-  s'intercale entre deux journées.
-- **Premier lancement uniquement** : le splash de bienvenue n'apparaît que la
-  première fois ; les lancements suivants vont directement à la liste des
-  salons.
-- **Cadres de sidebar** : les sections ROOM et SESSION sont encadrées, la liste
-  des salons est présentée comme une arborescence (`├─`), et la palette de
-  commandes comme la recherche gagnent une barre de titre avec le rappel des
-  raccourcis.
-- **Démarrage non bloquant** : le premier sync part en tâche de fond, l'écran
-  s'affiche immédiatement et la liste des salons se peuple dès que la réponse
-  arrive.
-- **Timeline conversationnelle groupée** : les messages consécutifs du même
-  expéditeur sont regroupés en blocs avec un seul indicateur `› Vous` /
-  `‹ Nom` (au lieu d'un nom répété à chaque ligne, façon journal système). Un
-  séparateur temporel (`HH:MM ────`) apparaît après ~5 min de silence. Le
-  rendu est calculé au moment de l'affichage à partir d'entrées structurées,
-  ce qui permet un re-rendu cohérent à l'ouverture d'un salon.
-- **Historique serveur / scrollback** : à l'ouverture d'un salon, shelltrix
-  charge les messages les plus récents depuis le serveur, puis remonte dans
-  le passé à chaque remontée en haut de la timeline (`PageUp`). Les
-  doublons (messages déjà reçus par sync) sont dédupliqués par `event_id`,
-  la position de défilement est préservée, et `Ctrl+K` efface le salon.
-- **Modèle de message structuré complet** : chaque entrée de timeline porte
-  désormais `event_id`, `msgtype` et `has_mention` (détection de `@user`) en
-  plus de l'expéditeur/date/heure. C'est la fondation pour la pagination,
-  la recherche, les mentions et la persistance.
-- **Mentions directes mises en évidence** : un message vous mentionnant
-  (`@vous` ou `@vous:serveur`) voit sa mention affichée en gras et en couleur
-  d'accent dans la timeline, et le salon affiche un indicateur `@` distinct
-  dans la liste des salons tant que la mention n'est pas lue (les
-  notifications desktop sont alors préfixées `@Mention ·`). Détection sûre,
-  sans faux positifs (`@bob2`, `@bob:autre`).
-- **Cache SQLite local** : les messages reçus (sync + scrollback) sont
-  persistés par salon et par compte dans `~/.config/shelltrix/cache/` (fichier en
-  0600). À la réouverture d'un salon déjà vu, l'historique s'affiche
-  instantanément depuis le cache avant même que le serveur ne réponde ; la
-  re-déduplication par `event_id` évite les doublons. `Ctrl+K` purge aussi le
-  cache du salon.
-- **Recherche locale de messages** (`Ctrl+F`, `/search`, palette « Search
-  messages ») : un modal de recherche parcourt l'historique en cache des
-  salons, insensible à la casse, et affiche les correspondances (salon +
-  extrait + heure). Sélectionner un résultat ouvre le salon et positionne la
-  timeline sur le message.
-- **Rendu d'images 100 % sûr pour Textual** : plus aucune séquence
-  d'échappement écrite sur `stdout` (ce qui corrompait l'écran plein écran).
-  L'image est décomposée en demi-blocs Unicode colorés (truecolor) écrits
-  dans le RichLog ; fonctionne sur tout terminal 24 bits. Fallback simple
-  `📷 Image` si Pillow est absent. Pillow devient une dépendance optionnelle
-  (`shelltrix[image]`).
-- Reconnexion automatique avec backoff exponentiel (1s → 30s) sur panne réseau :
-  l'app se re-synchronise toute seule au lieu de rester "off-line". Nouvel état
-  `reconnecting…` dans le header et la sidebar.
-- Complétion par `Tab` pour les suggestions fuzzy (commandes slash, mentions
-  `@user` / `#room`), en plus de `Enter`.
-- Barré inline (`~~texte~~`) dans le rendu markdown.
-- Tests d'intégration de la couche `ShelltrixClient` (politique de sécurité à
-  l'envoi, invites, typing, envoi d'images) en mockant `nio.AsyncClient`.
-- Métadonnées PyPI complètes (licence, classifieurs, URLs, keywords) et
-  vérification CI du contenu du wheel (`app.tcss` présent).
+- **Replies**: the `/reply` command replies to the last message received in the
+  current room. The sent message carries the `m.relates_to` expected by the
+  Matrix spec (`m.in_reply_to`), falling back to `↪ Name` when the target is
+  unknown or out of cache. The cited message is restored from history and
+  displayed inside the reply.
+- **Reactions**: `/reactions` lists a message's reactions; `/react <emoji>` adds
+  one. The total is displayed under the message and refreshed live, or rebuilt
+  from history when a room is reloaded.
+- **Widget timeline**: each message is a `MessageView` widget rather than a
+  `RichLog` line. Long messages are folded after a few lines ("see more" to
+  expand), the time shows in a left gutter, and a day separator (`today`,
+  `yesterday`, `monday, march 4`) is inserted between two days.
+- **First launch only**: the welcome splash appears only the first time; later
+  launches go straight to the room list.
+- **Sidebar frames**: the ROOM and SESSION sections are framed, the room list is
+  presented as a tree (`├─`), and the command palette and search gain a title bar
+  with a shortcut reminder.
+- **Non-blocking startup**: the first sync runs in the background, the screen
+  appears immediately, and the room list populates as soon as the response
+  arrives.
+- **Grouped conversational timeline**: consecutive messages from the same sender
+  are grouped into blocks with a single `› You` / `‹ Name` indicator (instead of a
+  name repeated on every line, system-log style). A time separator (`HH:MM ────`)
+  appears after ~5 min of silence. Rendering is computed at display time from
+  structured entries, which allows a consistent re-render when a room is opened.
+- **Server history / scrollback**: when opening a room, shelltrix loads the most
+  recent messages from the server, then walks back into the past on each upward
+  scroll to the top of the timeline (`PageUp`). Duplicates (messages already
+  received via sync) are deduplicated by `event_id`, the scroll position is
+  preserved, and `Ctrl+K` clears the room.
+- **Complete structured message model**: each timeline entry now carries
+  `event_id`, `msgtype` and `has_mention` (`@user` detection) on top of
+  sender/date/time. This is the foundation for pagination, search, mentions and
+  persistence.
+- **Direct mentions highlighted**: a message mentioning you (`@you` or
+  `@you:server`) has its mention displayed in bold and accent color in the
+  timeline, and the room shows a distinct `@` indicator in the room list until
+  the mention is read (desktop notifications are then prefixed with
+  `@Mention ·`). Safe detection, no false positives (`@bob2`, `@bob:other`).
+- **Local SQLite cache**: received messages (sync + scrollback) are persisted per
+  room and per account in `~/.config/shelltrix/cache/` (file mode 0600). When
+  reopening an already-seen room, history displays instantly from the cache
+  before the server even responds; re-deduplication by `event_id` prevents
+  duplicates. `Ctrl+K` also purges the room's cache.
+- **Local message search** (`Ctrl+F`, `/search`, "Search messages" palette): a
+  search modal scans the cached history of the rooms, case-insensitive, and
+  displays matches (room + excerpt + time). Selecting a result opens the room
+  and positions the timeline on the message.
+- **100% Textual-safe image rendering**: no escape sequence is written to `stdout`
+  anymore (which corrupted the full-screen display). The image is decomposed
+  into colored Unicode half-blocks (truecolor) written into the RichLog; works
+  on any 24-bit terminal. Simple `📷 Image` fallback if Pillow is missing. Pillow
+  becomes an optional dependency (`shelltrix[image]`).
+- Automatic reconnection with exponential backoff (1s → 30s) on network failure:
+  the app re-syncs by itself instead of staying "offline". New `reconnecting…`
+  state in the header and sidebar.
+- `Tab` completion for fuzzy suggestions (slash commands, `@user` / `#room`
+  mentions), in addition to `Enter`.
+- Inline strikethrough (`~~text~~`) in markdown rendering.
+- Integration tests for the `ShelltrixClient` layer (send security policy,
+  invites, typing, image sending) by mocking `nio.AsyncClient`.
+- Complete PyPI metadata (license, classifiers, URLs, keywords) and CI
+  verification of the wheel contents (`app.tcss` present).
 
 ### Fixed
-- L'ouverture d'un message depuis la recherche (`Ctrl+F` → `Entrée`) positionne
-  la timeline sur le bon message au lieu de tomber en haut du salon.
-- La vue ne saute plus en bas de la timeline quand un préfixe d'historique
-  arrive : la position de défilement est recalée une fois les widgets montés.
-- Le champ « alias » du modal « Join a room » rejoint le salon avec `Entrée`,
-  comme le bouton.
-- Les messages d'erreur destinés à l'utilisateur final sont en anglais
-  (conventions des codes de sortie), au lieu d'un mélange français/anglais.
-- `app.tcss` est désormais embarqué dans le paquet (`setuptools.package-data`) :
-  le fichier ne disparaît plus après `pip install`.
-- L'installateur utilise le gestionnaire de paquets pour `pipx`
-  (`sudo apt install -y pipx` sur les distros PEP 668) au lieu de `pip
-  install --user` qui casse sur Debian 11+ / Ubuntu 23.04+.
-- Les mentions `@user` excluent désormais l'utilisateur courant.
-- Le badge de non-lu est plafonné à `99+` au lieu d'un nombre qui déborde.
+- Opening a message from search (`Ctrl+F` → `Enter`) positions the timeline on
+  the right message instead of jumping to the top of the room.
+- The view no longer jumps to the bottom of the timeline when a history prefix
+  arrives: the scroll position is realigned once the widgets are mounted.
+- The "alias" field of the "Join a room" modal joins the room with `Enter`, like
+  the button.
+- Error messages intended for the end user are in English (exit code
+  conventions), instead of a French/English mix.
+- `app.tcss` is now bundled in the package (`setuptools.package-data`): the file
+  no longer disappears after `pip install`.
+- The installer uses the system package manager for `pipx` (`sudo apt install -y
+  pipx` on PEP 668 distros) instead of `pip install --user`, which breaks on
+  Debian 11+ / Ubuntu 23.04+.
+- `@user` mentions now exclude the current user.
+- The unread badge is capped at `99+` instead of an overflowing number.
 
 ## [0.2.0] - 2026-09
 
 ### Added
-- Indicateurs de frappe (`typing…`) dans la timeline.
-- Splash animé avec logo ASCII fixe (plus de dépendance `pyfiglet`).
-- Command palette repensée (en-têtes de section, badges).
-- Suppression du runtime web (migration en cours vers Rust/ratatui).
+- Typing indicators (`typing…`) in the timeline.
+- Animated splash with a fixed ASCII logo (no more `pyfiglet` dependency).
+- Redesigned command palette (section headers, badges).
+- Removal of the web runtime.
 
 ### Fixed
-- `_handle_typing` est désormais async (correspond à `TypingHandler`) : les
-  événements de frappe ne lèvent plus de `TypeError`.
-- Les timers d'intervalle du statut sont arrêtés au unmount (plus de leak).
-- Palette : utilisation du token de couleur pour les en-têtes de section.
+- `_handle_typing` is now async (matching `TypingHandler`): typing events no
+  longer raise `TypeError`.
+- Status interval timers are stopped on unmount (no more leak).
+- Palette: use the color token for section headers.
 
 ## [0.1.0] - 2026
 
 ### Added
-- Login Matrix + boucle de sync continue.
-- Liste de salons, timeline en direct, envoi de messages.
-- Chiffrement E2EE (réception/déchiffrement).
-- Vérification d'appareil par emoji (SAS) avec confirmation humaine.
-- Blocage d'envoi vers des appareils non vérifiés en salon chiffré.
-- Confirmation humaine des invitations.
-- Token d'accès stocké dans le trousseau système.
-- Store E2EE chiffré au repos (Fernet, clé dans le trousseau) + clé de
-  récupération de session (`/recovery`).
-- Command palette, déconnexion propre (révocation du token).
+- Matrix login + continuous sync loop.
+- Room list, live timeline, message sending.
+- E2EE encryption (receive/decrypt).
+- Device verification by emoji (SAS) with human confirmation.
+- Blocking sends to unverified devices in an encrypted room.
+- Human confirmation of invites.
+- Access token stored in the system keyring.
+- E2EE store encrypted at rest (Fernet, key in the keyring) + session recovery
+  key (`/recovery`).
+- Command palette, clean logout (token revocation).
