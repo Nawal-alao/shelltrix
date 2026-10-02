@@ -70,9 +70,10 @@ No native build. Install inside [WSL2](https://learn.microsoft.com/windows/wsl/i
 shelltrix
 ```
 
-On first launch, a login screen asks for your homeserver, user ID, and
-password. Credentials are stored in `~/.config/shelltrix/` with `600`
-permissions — subsequent launches go straight to the chat interface.
+On first launch, a welcome splash plays, then a login screen asks for your
+homeserver, user ID, and password. Credentials are stored in
+`~/.config/shelltrix/` with `600` permissions — every later launch skips the
+splash and goes straight to the chat interface.
 
 ### From a local checkout
 
@@ -93,28 +94,32 @@ ln -s "$(pwd)/.venv/bin/shelltrix" ~/.local/bin/shelltrix
 | `Ctrl+P` | Command palette |
 | `Ctrl+R` | Focus room list |
 | `Ctrl+L` | Focus composer |
+| `Ctrl+F` | Search in local history |
 | `Ctrl+K` | Clear active timeline |
 | `Ctrl+D` | Toggle sidebar |
 | `Ctrl+Q` | Quit |
 | `Enter` | Send message (in composer) |
 | `↑` / `↓` + `Enter` | Navigate & open room |
+| `PageUp` / `PageDown` | Scroll the timeline, page up loads older history |
+| `/help` | List the slash commands |
 
 ---
 
 ## Command palette
 
-Open with `Ctrl+P`. Type to search instantly through commands organized in
-four sections:
+Open with `Ctrl+P`. Type to search instantly; a **Suggested** section surfaces
+the three most frequent actions, then four themed sections:
 
 | Section | Commands |
 |---------|----------|
 | **Navigation** | Focus rooms, focus composer, toggle sidebar |
-| **Chat** | Clear screen, mark as read, join room |
+| **Chat** | Clear screen, mark as read, search messages, join room |
 | **Action** | Insert `/sendimg`, open last link |
-| **System** | Sync status, switch theme, log out, quit |
+| **System** | Sync status, switch theme, recovery key, switch account, sign out, quit |
 
-Navigate with `↑`/`↓` or `Ctrl+P`/`Ctrl+N`, confirm with `Enter`, close
-with `Esc`.
+Each row shows its keyboard shortcut, and the dialog carries a title bar with
+the `esc` reminder. Navigate with `↑`/`↓` or `Ctrl+P`/`Ctrl+N`, confirm with
+`Enter`, close with `Esc`.
 
 ---
 
@@ -125,7 +130,9 @@ Type `/` in the composer to trigger fuzzy autocompletion:
 | Command | Description |
 |---------|-------------|
 | `/me <text>` | Send an action (italic emote) |
-| `/react <emoji>` | React to the last message |
+| `/reply <text>` | Reply to the last received message |
+| `/react <emoji>` | React to the last received message |
+| `/reactions [event_id]` | Reload a message's reactions from the server |
 | `/join <#alias>` | Join a room by alias |
 | `/sendimg <path>` | Send an image from disk (E2EE) |
 | `/search <text>` | Search local message history |
@@ -138,6 +145,24 @@ Type `/` in the composer to trigger fuzzy autocompletion:
 
 ---
 
+## Timeline
+
+Every message is its own widget, which is what makes the rest possible:
+
+- **Collapsed long messages** — anything past ~5 rendered lines is clipped,
+  with a *see more* footer to expand it (and *see less* to fold it back).
+- **Hour gutter** — the time sits in a left column, the message body on the
+  right, instead of a `HH:MM ────` rule interrupting the text.
+- **Day separators** — `today`, `yesterday`, or a full date, inserted between
+  two days.
+- **Replies** — `/reply` sends a real `m.in_reply_to` relation; the cited
+  message is rendered above the answer, with an `↪ Name` fallback when the
+  target is unknown.
+- **Reactions** — totals under the message, updated live and rebuilt from the
+  server history when a room is reopened.
+
+---
+
 ## Sidebar
 
 A context panel on the right (`Ctrl+D`):
@@ -145,6 +170,9 @@ A context panel on the right (`Ctrl+D`):
 - **Room** — name, alias, topic, member counts, encryption state, your
   power level (`Admin (100)` / `Moderator (50)` / `User`).
 - **Session** — sync state (colored indicator), last refresh age.
+
+Both panels are drawn as framed blocks (`┌ ROOM ┐`), and the room list reads
+as a tree (`├─ room`) so long names stay legible.
 
 ---
 
@@ -169,6 +197,7 @@ theme variables — add a new theme by appending an entry to
 
 - Login + continuous sync loop
 - Room list, live timeline, message sending
+- Replies (`m.in_reply_to`) and reactions, live and from history
 - Receiving & decrypting encrypted messages (E2EE)
 - Device verification by emoji (SAS) with manual confirmation
 - Refuse to send to unverified devices
@@ -182,32 +211,40 @@ theme variables — add a new theme by appending an entry to
 - **Session recovery key** (`/recovery`): shareable secret for E2EE
   history restoration; only a scrypt verifier lives on disk
 - Encrypted store auto-decrypted on startup via keyring or recovery key
+- Encryption aborts loudly rather than leaving session keys in plaintext
 
 ### Interface
 
-- ASCII art splash screen with gradient animation
+- ASCII art welcome splash, on the very first launch only
 - Centered card login with styled errors
 - Top status bar: room name, sync indicator, clock
-- Room list sorted by unread, with badges
-- Timeline with conversation grouping, time-gap separators, inline
-  markdown, and truecolor half-block image previews
-- Sidebar with room & session context
+- Room list as a framed tree, sorted by unread, with badges
+- Timeline of per-message widgets: conversation grouping, collapsed long
+  messages, hour gutter, day separators, inline markdown, truecolor
+  half-block image previews
+- Framed sidebar with room & session context
+- Title bars on the command palette and the search dialog
 
 ### Reliability
 
 - **Automatic reconnection** with exponential backoff (1s → 30s)
-- **Server history / scrollback**: older messages loaded on PageUp
+- **Instant startup**: the first sync runs in the background, the room list
+  fills in as soon as the answer lands
+- **Server history / scrollback**: older messages loaded on PageUp, view
+  position preserved across prepends
 - Local message cache (`~/.config/shelltrix/cache/`) for instant re-open
-- Splash auto-advances after ~3s (skip with `Enter` / `Esc`)
+- Local full-text search (`Ctrl+F`), jumping straight to the message
+- Direct-mention detection with a distinct `@` badge per room
 
 ---
 
 ## Roadmap
 
-1. Inline images (Sixel / Kitty graphics protocol)
-2. Desktop notifications (`notify-send`)
-3. Unread indicators per room
-4. Multi-account support
+1. Sixel / Kitty graphics protocol for inline images (today: truecolor
+   half-blocks)
+2. Cross-signing device verification — blocked by `matrix-nio`, tracked in
+   [MIGRATION_RUST.md](MIGRATION_RUST.md)
+3. Message editing and threads
 
 ---
 
