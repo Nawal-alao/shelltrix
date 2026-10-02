@@ -6,6 +6,25 @@ All notable changes to shelltrix. The format follows
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-02
+
+### Fixed
+- `install.sh` rejected the ref it pins itself: validation accepted
+  hexadecimal SHAs only, while the shipped pin is the release tag
+  `v1.0.1`. `curl … | sh` therefore aborted with `ERROR Invalid
+  SHELLTRIX_REF: 'v1.0.1' (hexadecimal commit SHA required)` on every
+  machine. The ref check now accepts a release tag or a commit SHA.
+- The ref is now validated **before** anything is installed, instead of
+  after libolm and pipx. An invalid `SHELLTRIX_REF` used to modify the
+  machine and only then abort.
+
+### Added
+- `sh install.sh --check-ref <ref>` runs the ref validation alone, so
+  the test suite exercises the shipped code instead of a copy of it.
+- Three tests: the installer accepts its own pin, it refuses unsafe
+  refs, and the check precedes every side effect.
+
+
 ## [1.0.1] - 2026-10-02
 
 ### Changed
