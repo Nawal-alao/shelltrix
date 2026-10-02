@@ -27,6 +27,15 @@ from . import themes
 # quand le silence entre eux dépasse ce seuil.
 TIME_GAP_SEPARATOR_MS = 5 * 60 * 1000
 
+# Indentation des lignes de la timeline : le corps est décalé pour que l'en-tête
+# d'auteur (heure + nom) et le texte des messages ne se confondent pas. Cette
+# largeur est aussi celle de la gouttière d'heure + 1 espace de respiration
+# (voir `_header_for` dans l'écran chat) : les deux colonnes s'alignent.
+_TIMELINE_INDENT = " " * 8
+
+# Longueur du filet du séparateur temporel.
+_GAP_DASHES = 36
+
 
 @dataclass
 class TimelineEntry:
@@ -48,6 +57,28 @@ class TimelineEntry:
     is_image: bool = False
     image_hint: str = ""  # ex. nom de fichier pour le placeholder
     timestamp: str = field(default="")  # "HH:MM" pré-calculé
+
+
+@dataclass
+class MessageBlock:
+    """Un bloc de rendu de la timeline : UN message et son habillage.
+
+    La timeline est faite de widgets (un par message) et non d'un flux de
+    lignes : c'est ce qui rend possible le survol, la sélection, la copie et
+    la réaction ciblée sur un message. `format_timeline_blocks` produit donc
+    des blocs, que `format_timeline_entries` aplatit ensuite en lignes.
+
+    Attributes:
+        entry: le message rendu (porte l'event_id, l'auteur, l'horodatage).
+        lines: markup Rich du bloc, en-tête compris sauf si `is_continuation`.
+        is_continuation: en-tête omis (même expéditeur, pas de silence).
+        gap_before: silence > seuil avant ce bloc → séparateur temporel.
+    """
+
+    entry: TimelineEntry
+    lines: list[str]
+    is_continuation: bool = False
+    gap_before: bool = False
 
 
 @dataclass
@@ -86,51 +117,72 @@ def body_mentions_user(body: str, user_id: str) -> bool:
     return False
 
 
+def format_timeline_blocks(
+    entries: list[TimelineEntry],
+    ctx: TimelineContext,
+    *,
+    header_for: Callable[[TimelineEntry], str],
+) -> tuple[list[MessageBlock], TimelineContext]:
+    """Convertit des entrées en blocs de rendu (un par message).
+
+    Règles de groupage, identiques à `format_timeline_entries` :
+      - premier message d'un contexte neuf → en-tête + ligne(s) du bloc ;
+      - silence > seuil → `gap_before` (le séparateur temporel est rendu par
+        l'appelant) puis en-tête + corps ;
+      - même expéditeur consécutif, sans silence → simple corps indenté
+        (`is_continuation`, aucun en-tête) ;
+      - expéditeur différent → nouvel en-tête.
+
+    `header_for` est un callable(entry) → markup Rich de l'en-tête (avec
+    l'heure, le nom et sa couleur), fourni par l'appelant car il dépend du
+    thème. L'heure et le nom restent hors de ce module : ici on ne décide que
+    de la STRUCTURE, l'appelant décide du rendu.
+
+    Retourne (blocs, contexte_final), le contexte s'appliquant à la suite de
+    la liste pour un rendu incrémental cohérent avec le rendu complet.
+    """
+    blocks: list[MessageBlock] = []
+    indent = _TIMELINE_INDENT
+    for e in entries:
+        gap = ctx.last_sender is not None and interval_time_gap(ctx.last_time_ms, e.time_ms)
+        continuation = ctx.last_sender is not None and not gap and e.sender == ctx.last_sender
+        lines: list[str] = []
+        if not continuation:
+            lines.append(f"{indent}{header_for(e)}")
+        lines.append(f"{indent}{e.body}")
+        blocks.append(
+            MessageBlock(
+                entry=e,
+                lines=lines,
+                is_continuation=continuation,
+                gap_before=gap,
+            )
+        )
+        ctx.last_sender = e.sender
+        ctx.last_time_ms = e.time_ms
+    return blocks, ctx
+
+
 def format_timeline_entries(
     entries: list[TimelineEntry],
     ctx: TimelineContext,
     *,
     header_for: Callable[[TimelineEntry], str],
 ) -> tuple[list[str], TimelineContext]:
-    """Convertit une liste d'entrées en lignes Rich groupées en blocs.
+    """Aplatit les blocs de `format_timeline_blocks` en lignes Rich.
 
-    Applique les règles (dans l'ordre) :
-      - nouveau salon (ctx vide) → ouvre un bloc (header) + première ligne ;
-      - silence > seuil → séparateur temporel, puis header + ligne ;
-      - même expéditeur consécutif → simple ligne indentée (continuation) ;
-      - expéditeur différent → header + ligne.
-
-    `header_for` est un callable(entry) → markup Rich du header de bloc
-    (ex. "› Vous" ou "‹ Alice"), fourni par l'appelant car il dépend du thème
-    et des couleurs de sender.
-
-    Retourne (lignes, contexte_final) : le contexte final s'applique à la
-    suite de la liste, pour permettre un rendu incrémental cohérent avec le
-    rendu complet.
+    Vue de confort (tests, débogage, rendu texte) : un message de plus d'une
+    ligne occupe plusieurs lignes. Le rendu à l'écran, lui, utilise les
+    blocs pour avoir un widget par message.
     """
+    blocks, ctx = format_timeline_blocks(entries, ctx, header_for=header_for)
     out: list[str] = []
-    indent = "        "
-    for e in entries:
-        if ctx.last_sender is None:
-            # Début : on ouvre un bloc.
-            out.append(f"{indent}{header_for(e)}")
-            out.append(f"{indent}{e.body}")
-        elif interval_time_gap(ctx.last_time_ms, e.time_ms):
-            # Silence trop long : séparateur temporel puis nouveau bloc.
-            ts = f"{e.timestamp} " if e.timestamp else ""
+    for b in blocks:
+        if b.gap_before:
+            ts = f"{b.entry.timestamp} " if b.entry.timestamp else ""
             out.append("")
-            out.append(f"[dim]{ts}{'─' * 36}[/dim]")
-            out.append(f"{indent}{header_for(e)}")
-            out.append(f"{indent}{e.body}")
-        elif e.sender == ctx.last_sender:
-            # Même expéditeur, pas de silence : on continue le bloc.
-            out.append(f"{indent}{e.body}")
-        else:
-            # Changement d'expéditeur : nouvel indicateur de bloc.
-            out.append(f"{indent}{header_for(e)}")
-            out.append(f"{indent}{e.body}")
-        ctx.last_sender = e.sender
-        ctx.last_time_ms = e.time_ms
+            out.append(f"[dim]{ts}{'─' * _GAP_DASHES}[/dim]")
+        out.extend(b.lines)
     return out, ctx
 
 

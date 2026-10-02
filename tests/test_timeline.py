@@ -1,7 +1,7 @@
 """Tests pour le rendu de la timeline conversationnelle (groupage par
-expéditeur + séparateurs temporels).
+expéditeur, séparateurs temporels et de date).
 
-Cible la logique pure `format_timeline_entries` / `interval_time_gap` de
+Cible la logique pure `format_timeline_blocks` / `format_timeline_entries` de
 `shelltrix.formatting`, sans état Textual.
 """
 
@@ -12,6 +12,7 @@ from shelltrix.formatting import (
     TimelineContext,
     TimelineEntry,
     body_mentions_user,
+    format_timeline_blocks,
     format_timeline_entries,
     highlight_mentions,
     interval_time_gap,
@@ -192,3 +193,50 @@ class TestHighlightMentions:
         out = highlight_mentions("@alice:autreserveur ici", "@alice:matrix.org")
         assert f"[{a}]@alice:autreserveur" not in out
         assert "@alice:autreserveur" in out
+
+
+class TestMessageBlocks:
+    """Le rendu en blocs (un widget par message) et ses séparateurs."""
+
+    def _blocks(self, entries):
+        return format_timeline_blocks(entries, TimelineContext(), header_for=head)
+
+    def test_one_block_per_entry(self) -> None:
+        blocks, _ = self._blocks([entry("@a:hs", "un"), entry("@b:hs", "deux")])
+        assert [b.entry.body for b in blocks] == ["un", "deux"]
+        assert len(blocks) == 2
+
+    def test_continuation_has_no_header(self) -> None:
+        blocks, _ = self._blocks([entry("@a:hs", "un"), entry("@a:hs", "deux")])
+        assert blocks[0].is_continuation is False
+        assert blocks[1].is_continuation is True
+        # Pas d'en-tête dupliqué sur la continuation
+        assert all("HEAD(" not in ln for ln in blocks[1].lines)
+
+    def test_gap_before_only_after_silence(self) -> None:
+        t0 = 1_700_000_000_000
+        blocks, _ = self._blocks(
+            [
+                entry("@a:hs", "avant", time_ms=t0),
+                entry("@a:hs", "apres", time_ms=t0 + TIME_GAP_SEPARATOR_MS + 1),
+            ]
+        )
+        assert blocks[0].gap_before is False
+        assert blocks[1].gap_before is True
+
+    def test_flatten_matches_blocks(self) -> None:
+        """La vue aplatie et les blocs doivent rester cohérents."""
+        t0 = 1_700_000_000_000
+        entries = [
+            entry("@a:hs", "un", time_ms=t0),
+            entry("@a:hs", "deux", time_ms=t0 + 1000),
+            entry("@b:hs", "trois", time_ms=t0 + TIME_GAP_SEPARATOR_MS + 1),
+        ]
+        blocks, _ = format_timeline_blocks(entries, TimelineContext(), header_for=head)
+        lines, _ = format_timeline_entries(entries, TimelineContext(), header_for=head)
+        expected = []
+        for b in blocks:
+            if b.gap_before:
+                expected += ["", f"[dim]HH:MM {'─' * 36}[/dim]"]
+            expected += b.lines
+        assert lines == expected
