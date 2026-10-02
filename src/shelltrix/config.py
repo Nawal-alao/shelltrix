@@ -157,6 +157,32 @@ def skip_splash() -> bool:
         return False
 
 
+# Marqueur de premier lancement : le splash de bienvenue n'est offert qu'une
+# fois. Fichier dédié (vide) plutôt qu'une clé de config.json, car
+# themes.save_pref() réécrit config.json à l'identique à chaque changement de
+# thème — un marqueur stocké là-dedans serait effacé au premier ctrl+t.
+FIRST_RUN_FILE = CONFIG_DIR / ".first_run_done"
+
+
+def first_run_done() -> bool:
+    """Vrai si le splash de bienvenue a déjà été offert (premier lancement
+    terminé). Un fichier absent = première utilisation de la machine."""
+    return FIRST_RUN_FILE.exists()
+
+
+def mark_first_run_done() -> None:
+    """Marque le splash comme offert (best effort).
+
+    Best effort comme save_pref() : un FS en lecture seule ne doit pas
+    empêcher l'app de tourner — au pire le splash réapparaîtra au prochain
+    lancement."""
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        FIRST_RUN_FILE.touch()
+    except OSError:
+        pass
+
+
 def remove_store() -> None:
     """Supprime le store olm local (déconnexion complète de l'appareil)."""
     shutil.rmtree(STORE_DIR, ignore_errors=True)

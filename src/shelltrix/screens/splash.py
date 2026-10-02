@@ -1,6 +1,7 @@
 """Splash screen — bannière "SHELLTRIX" en bloc ASCII fixe, dégradé de thème sobre
 (muted → text, lettre initiale en primary), révélation en cascade du logo,
 typage discret de la tagline, auto-transition vers login/chat.
+Réservé à la toute première utilisation (cf. config.first_run_done()).
 Aucune couleur en dur : tout vient des tokens du thème actif."""
 
 from __future__ import annotations

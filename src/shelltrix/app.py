@@ -15,7 +15,13 @@ from textual.app import App
 
 from . import __version__, themes
 from .accounts import get_manager
-from .config import Credentials, StoreLockedError, skip_splash
+from .config import (
+    Credentials,
+    StoreLockedError,
+    first_run_done,
+    mark_first_run_done,
+    skip_splash,
+)
 from .dialogs.command_palette import CommandPalette
 from .dialogs.store_unlock import StoreUnlockDialog
 from .matrix_client import ShelltrixClient
@@ -72,10 +78,16 @@ class ShelltrixApp(App):
         return name
 
     async def on_mount(self) -> None:
-        if skip_splash():
+        # Le splash de bienvenue est réservé à la toute première utilisation :
+        # `skip_splash` reste l'opt-out manuel (lancement scripté), le
+        # marqueur de premier lancement fait le reste. On marque *avant* de
+        # pousser l'écran : une fois le splash affiché, il ne revient plus,
+        # même si l'utilisateur quitte l'app pendant l'animation.
+        if skip_splash() or first_run_done():
             await self.begin()
-        else:
-            await self.push_screen(SplashScreen())
+            return
+        mark_first_run_done()
+        await self.push_screen(SplashScreen())
 
     async def begin(self) -> None:
         """Après le splash : login ou reprise du chat selon les creds."""
