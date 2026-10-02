@@ -10,6 +10,7 @@ import asyncio
 from typing import NamedTuple
 
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
@@ -183,11 +184,19 @@ class CommandPalette(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="cp-dialog"):
-            with Horizontal(id="cp-search"):
-                yield Static(">", id="cp-search-icon")
-                yield Input(placeholder="Search commands…", id="cp-input")
+            with Horizontal(id="cp-header"):
+                yield Label("Commands", id="cp-header-title")
+                yield Label("esc", id="cp-header-esc")
+            yield Input(placeholder="Search", id="cp-input")
             yield ListView(id="cp-list")
             yield Static("No command found", id="cp-empty")
+
+    def on_click(self, event: events.Click) -> None:
+        if getattr(event.target, "id", None) == "cp-header-esc":
+            self.dismiss()
+
+    def on_resize(self) -> None:
+        self._fit_list()
 
     async def on_mount(self) -> None:
         self.query_one("#cp-input", Input).focus()
@@ -205,27 +214,25 @@ class CommandPalette(ModalScreen[None]):
     @staticmethod
     def _markup(entry: CommandEntry, cursor: bool) -> tuple[Text, Text]:
         """Construit le markup d'une ligne : (titre+desc, raccourci)."""
-        accent = themes.accent()
         accent_text = themes.accent_text()
         muted = themes.muted()
 
-        # Titre + description (séparés par · si pas de raccourci)
+        # Titre + description
         if cursor:
             title = Text(entry.title, style=f"bold {accent_text}")
         else:
             title = Text(entry.title, style="bold")
         if not entry.key and entry.description:
-            desc = f"  ·  {entry.description}"
-            title.append(desc)
-            title.stylize(muted, start=len(entry.title) + 2, end=len(title.plain))
+            desc = f"  {entry.description}"
+            title.append(desc, style=f"{accent_text}" if cursor else muted)
 
-        # Raccourci clavier entre crochets [ctrl+r]
+        # Raccourci clavier épuré (sans crochets, aligné à droite)
         right = Text()
         if entry.key:
             if cursor:
-                right.append(f"[{entry.key}]", style=f"bold {accent_text}")
+                right.append(entry.key, style=f"bold {accent_text}")
             else:
-                right.append(f"[{entry.key}]", style=muted)
+                right.append(entry.key, style=muted)
 
         return title, right
 
@@ -243,7 +250,7 @@ class CommandPalette(ModalScreen[None]):
     @staticmethod
     def _build_header(section: str) -> ListItem:
         return ListItem(
-            Label(section.upper(), classes="cp-section"),
+            Label(section, classes="cp-section"),
             classes="cp-header-item",
         )
 
@@ -281,12 +288,27 @@ class CommandPalette(ModalScreen[None]):
         lv = self.query_one("#cp-list", ListView)
         if lv.styles.display == "none" or not lv.children:
             return
-        # Le dialogue est plafonné à 70% de l'écran : on borne la liste à ce
-        # qui tient dedans (sinon elle déborde sous le dialogue) et on la
-        # laisse au plus haut de son contenu (pas de vide en dessous).
-        rows = len(lv.children)
-        max_rows = max(3, int(self.size.height * 0.7) - 7)
-        lv.styles.height = min(rows, max_rows)
+        total_rows = sum(
+            2 if (isinstance(r, str) and i > 0) else 1
+            for i, r in enumerate(self._rows)
+        )
+        max_rows = max(3, int(self.size.height * 0.75) - 6)
+        lv.styles.height = min(total_rows, max_rows)
+
+    def _refresh_row_markup(self) -> None:
+        lv = self.query_one("#cp-list", ListView)
+        if not self._rows or not lv.children:
+            return
+        idx = lv.index if lv.index is not None else -1
+        for i, (child, entry) in enumerate(zip(lv.children, self._rows)):
+            if not isinstance(entry, CommandEntry):
+                continue
+            try:
+                title, right = self._markup(entry, i == idx)
+                child.query_one(".cp-row-title", Label).update(title)
+                child.query_one(".cp-row-right", Static).update(right)
+            except Exception:
+                pass
 
     async def _populate(self) -> None:
         # Les frappes rapides lancent des _populate concurrents (Input.Changed
@@ -321,21 +343,12 @@ class CommandPalette(ModalScreen[None]):
                     await lv.append(item)
             lv.index = self._first_command_index()
             self._fit_list()
+            self._refresh_row_markup()
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        lv = event.list_view
-        if lv.id != "cp-list" or not self._rows:
+        if event.list_view.id != "cp-list":
             return
-        idx = lv.index if lv.index is not None else 0
-        for i, (child, entry) in enumerate(zip(lv.children, self._rows)):
-            if not isinstance(entry, CommandEntry):
-                continue
-            try:
-                title, right = self._markup(entry, i == idx)
-                child.query_one(".cp-row-title", Label).update(title)
-                child.query_one(".cp-row-right", Static).update(right)
-            except Exception:
-                pass
+        self._refresh_row_markup()
 
     def _selected_id(self) -> str | None:
         lv = self.query_one("#cp-list", ListView)

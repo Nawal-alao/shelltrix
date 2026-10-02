@@ -13,6 +13,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
@@ -42,15 +43,23 @@ class SearchDialog(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="cp-dialog"):
-            with Horizontal(id="cp-search"):
-                yield Static("⌕", id="cp-search-icon")
-                yield Input(
-                    placeholder="Search messages…",
-                    id="cp-input",
-                    value=self.initial_query,
-                )
+            with Horizontal(id="cp-header"):
+                yield Label("Search messages", id="cp-header-title")
+                yield Label("esc", id="cp-header-esc")
+            yield Input(
+                placeholder="Search messages…",
+                id="cp-input",
+                value=self.initial_query,
+            )
             yield ListView(id="cp-list")
             yield Static("No message found", id="cp-empty")
+
+    def on_click(self, event: events.Click) -> None:
+        if getattr(event.target, "id", None) == "cp-header-esc":
+            self.dismiss()
+
+    def on_resize(self) -> None:
+        self._fit_list()
 
     async def on_mount(self) -> None:
         self.query_one("#cp-input", Input).focus()
@@ -99,7 +108,7 @@ class SearchDialog(ModalScreen[None]):
         if lv.styles.display == "none" or not lv.children:
             return
         rows = len(lv.children)
-        max_rows = max(3, int(self.size.height * 0.7) - 7)
+        max_rows = max(3, int(self.size.height * 0.75) - 6)
         lv.styles.height = min(rows, max_rows)
 
     async def _populate(self) -> None:
