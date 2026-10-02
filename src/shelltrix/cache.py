@@ -48,6 +48,8 @@ _EVENT_COLUMNS = (
     "is_image",
     "image_hint",
     "timestamp",
+    "reply_to_event_id",
+    "reply_to_name",
 )
 
 # Constantes SQL : les colonnes proviennent exclusivement de la constante
@@ -129,6 +131,8 @@ class MessageCache:
                 is_image INTEGER NOT NULL,
                 image_hint TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
+                reply_to_event_id TEXT NOT NULL DEFAULT '',
+                reply_to_name TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (user_id, room_id, event_id)
             );
 
@@ -136,7 +140,29 @@ class MessageCache:
                 ON messages (user_id, room_id, time_ms);
             """
         )
+        self._migrate_schema()
         self._conn.commit()
+
+    def _migrate_schema(self) -> None:
+        """Ajoute les colonnes manquantes à une base préexistante.
+
+        `CREATE TABLE IF NOT EXISTS` ne modifie pas une table déjà créée sur
+        disque : sans cette étape, une base issue d'une version antérieure
+        n'aurait pas les colonnes `reply_to_*` et tous les SELECT échoueraient.
+        On compare donc `PRAGMA table_info` à la liste attendue et on n'ajoute
+        que le manque, avec `DEFAULT ''` pour rester compatible NOT NULL.
+        """
+        have = {row["name"] for row in self._conn.execute("PRAGMA table_info(messages)")}
+        if not have:
+            return  # table absente : le CREATE ci-dessus vient de la créer
+        for column in _EVENT_COLUMNS:
+            if column in have:
+                continue
+            # `column` vient de la constante interne _EVENT_COLUMNS, jamais
+            # d'une donnée utilisateur ; les valeurs restent paramétrées.
+            self._conn.execute(
+                f"ALTER TABLE messages ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"  # nosec B608
+            )
 
     def _prune_if_oversized(self) -> None:
         """Purge les plus vieux messages si le cache dépasse MAX_CACHE_BYTES.
@@ -187,6 +213,8 @@ class MessageCache:
                     int(e.is_image),
                     e.image_hint,
                     e.timestamp,
+                    e.reply_to_event_id,
+                    e.reply_to_name,
                 )
             )
         self._conn.executemany(_UPSERT_SQL, rows)
@@ -257,6 +285,8 @@ class MessageCache:
             is_image=bool(r["is_image"]),
             image_hint=r["image_hint"],
             timestamp=r["timestamp"],
+            reply_to_event_id=r["reply_to_event_id"],
+            reply_to_name=r["reply_to_name"],
         )
 
     def clear_room(self, room_id: str) -> None:
