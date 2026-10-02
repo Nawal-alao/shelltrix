@@ -245,6 +245,12 @@ The queue is a separate type from the sync loop for the same reason: ordering,
 de-duplication, the timeout that reports a quiet room as `None` rather than an
 error, and the error a failed loop leaves behind are all verifiable offline.
 
+Verified end to end against Synapse 1.162: a message written *before*
+`start_sync` arrives through the initial sync, a message written *by another
+client* while the loop runs arrives within the timeout, neither is replayed,
+and a quiet room reads as `None` rather than an error. Script:
+`~/.spike/stream-e2e.py`.
+
 Not yet covered: only `m.room.message` is normalized. Images, reactions, typing,
 invites and SAS flows still have to cross the same seam before the transport can
 replace matrix-nio's section of `matrix_client.py`.
