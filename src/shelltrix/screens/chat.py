@@ -628,13 +628,23 @@ class ChatScreen(Screen):
             return sender
 
     def _header_for(self, entry: TimelineEntry) -> str:
-        """Markup Rich du header de bloc (› Vous / ‹ Nom)."""
+        """Markup Rich du header de bloc : heure en gouttière + auteur.
+
+        L'heure occupe une colonne fixe à gauche et le nom démarre exactement
+        sur la colonne du corps des messages (8 = 5 pour « HH:MM » + 3 espaces),
+        donc le texte ne se décale pas quand on ajoute l'horodatage. Elle n'est
+        rendue que sur les en-têtes : les messages consécutifs d'un même auteur
+        restent mutés, et l'heure est celle du début du bloc — se répéter à
+        chaque ligne serait le bruit que le groupage est censé supprimer.
+        """
+        ts = escape(entry.timestamp) if entry.timestamp else "--:--"
+        stamp = f"[dim]{ts}[/dim]   "
         if entry.is_own:
             accent = themes.accent()
-            return f"[bold][{accent}]› Vous[/{accent}][/bold]"
+            return f"{stamp}[bold][{accent}]› Vous[/{accent}][/bold]"
         color = _sender_color(entry.sender)
         name = escape(entry.display_name or entry.sender)
-        return f"[{color}]‹ {name}[/{color}]"
+        return f"{stamp}[{color}]‹ {name}[/{color}]"
 
     def on_resize(self, event: events.Resize) -> None:
         """Largeurs progressives des sidebars selon la largeur du terminal.
