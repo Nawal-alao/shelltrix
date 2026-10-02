@@ -61,6 +61,10 @@ class JoinRoomDialog(ModalScreen[None]):
             self.dismiss()
             self.app.call_after_refresh(self.chat.action_focus_input)
 
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "jr-alias":
+            asyncio.create_task(self._join())
+
     async def _join(self) -> None:
         raw = self.query_one("#jr-alias", Input).value.strip()
         if not raw:
