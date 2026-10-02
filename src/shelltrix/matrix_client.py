@@ -111,7 +111,7 @@ class ShelltrixClient:
         resp = await client.login(password, device_name="shelltrix")
         if not isinstance(resp, LoginResponse):
             await client.close()
-            raise RuntimeError(f"Échec de connexion : {resp}")
+            raise RuntimeError(f"Connection failed: {resp}")
 
         creds = Credentials(
             homeserver=homeserver,
@@ -360,7 +360,7 @@ class ShelltrixClient:
             return
         if not isinstance(resp, UploadResponse):
             if self.on_send_error is not None:
-                await self.on_send_error(room_id, f"Upload refusé : {resp}")
+                await self.on_send_error(room_id, f"Upload refused: {resp}")
             return
         content = {
             "msgtype": "m.image",

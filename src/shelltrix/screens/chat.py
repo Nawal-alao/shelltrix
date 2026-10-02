@@ -1512,7 +1512,7 @@ class ChatScreen(Screen):
         room = self.client.rooms().get(room_id)
         name = room.display_name if room else room_id
         self.app.notify(
-            f"Envoi bloqué — {escape(name)} : {escape(message)}",
+            f"Sending blocked — {escape(name)}: {escape(message)}",
             title="Unverified devices",
         )
 
