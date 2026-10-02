@@ -469,13 +469,24 @@ class ChatScreen(Screen):
         self.query_one("#room-title", Static).update(f"[bold]{escape(title)}[/bold]")
         self._refresh_room_list()
         self._render_timeline(room_id, scroll_end=False)
-        entries = self.message_log.get(room_id, [])
-        idx = next(
-            (i for i, e in enumerate(entries) if e.event_id == event_id),
-            len(entries) - 1,
-        )
         timeline = self.query_one("#timeline", VerticalScroll)
-        timeline.scroll_to(y=min(max(0, idx), timeline.max_scroll_y), animate=False)
+        # Scroll PRÉCIS sur le message visé : on retrouve le widget par son
+        # event_id. (L'ancien RichLog n'avait qu'un flux de lignes, d'où
+        # l'approximation par rang dans le log.)
+        target = next(
+            (
+                w
+                for w in timeline.query(MessageView)
+                if w.event_id == event_id
+            ),
+            None,
+        )
+        if target is not None:
+            timeline.call_after_refresh(
+                lambda: timeline.scroll_to_widget(target, animate=False)
+            )
+        else:
+            timeline.scroll_end(animate=False)
         self._refresh_sidebar()
         self._refresh_typing_display()
         self._set_composer_enabled(True)
@@ -541,17 +552,41 @@ class ChatScreen(Screen):
             self.message_log[room_id] = added + current
             self._cache.upsert_entries(room_id, added)
             self._render_timeline(room_id, scroll_end=False)
-            # Préserve la vue : le contenu pré-existant a glissé de len(added)
-            # lignes vers le bas.
-            timeline.scroll_to(
-                y=min(prev_scroll + len(added), timeline.max_scroll_y),
-                animate=False,
+            added_ids = {e.event_id for e in added}
+            self.call_after_refresh(
+                lambda: self._restore_scroll_after_prepend(timeline, prev_scroll, added_ids)
             )
             self._history_token[room_id] = (
                 getattr(resp, "end", None) or _HISTORY_END
             )
         finally:
             self._loading_history.discard(room_id)
+
+    def _restore_scroll_after_prepend(
+        self,
+        timeline: VerticalScroll,
+        prev_scroll: int,
+        added_ids: set[str],
+    ) -> None:
+        """Récompense le scroll après l'insertion d'un historique plus ancien.
+
+        Le contenu pré-existant a glissé vers le bas d'autant de lignes que
+        les nouveaux messages en occupent. On décale donc de la HAUTEUR
+        RÉELLEMENT RENDUE des widgets ajoutés : l'ancienne approximation
+        « + len(added) » supposait une ligne par message, ce qui était faux
+        dès qu'un message en faisait plusieurs (ou qu'un séparateur s'y
+        intercalait). Mesurable seulement après le passage du layout, d'où le
+        `call_after_refresh` de l'appelant.
+        """
+        delta = sum(
+            w.outer_size.height
+            for w in timeline.query(MessageView)
+            if w.event_id in added_ids
+        )
+        timeline.scroll_to(
+            y=min(prev_scroll + delta, timeline.max_scroll_y),
+            animate=False,
+        )
 
     def _entries_from_events(
         self, room_id: str, events: list
