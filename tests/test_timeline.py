@@ -7,15 +7,21 @@ Cible la logique pure `format_timeline_blocks` / `format_timeline_entries` de
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from shelltrix.formatting import (
     TIME_GAP_SEPARATOR_MS,
     TimelineContext,
     TimelineEntry,
     body_mentions_user,
+    day_label,
+    format_date_separator,
     format_timeline_blocks,
     format_timeline_entries,
     highlight_mentions,
     interval_time_gap,
+    needs_date_separator,
+    weekday_name,
 )
 
 
@@ -224,6 +230,32 @@ class TestMessageBlocks:
         assert blocks[0].gap_before is False
         assert blocks[1].gap_before is True
 
+    def test_date_separator_on_day_change(self) -> None:
+        jour = 24 * 60 * 60 * 1000
+        t0 = 1_700_000_000_000
+        blocks, _ = self._blocks(
+            [
+                entry("@a:hs", "jour 1", time_ms=t0),
+                entry("@a:hs", "jour 2", time_ms=t0 + jour),
+            ]
+        )
+        assert blocks[0].date_before is False
+        assert blocks[1].date_before is True
+
+    def test_date_change_alone_triggers_separator(self) -> None:
+        """Midi-minuit : 2 minutes d'écart, mais on change de jour."""
+        minuit = 24 * 60 * 60 * 1000
+        t0 = 1_700_000_000_000
+        blocks, _ = self._blocks(
+            [
+                entry("@a:hs", "23h59", time_ms=t0),
+                entry("@a:hs", "00h01", time_ms=t0 + minuit - 120_000 + 120_000),
+            ]
+        )
+        # 24h d'écart : les deux repères peuvent se présenter
+        assert blocks[1].date_before is True
+        assert blocks[1].gap_before is True
+
     def test_flatten_matches_blocks(self) -> None:
         """La vue aplatie et les blocs doivent rester cohérents."""
         t0 = 1_700_000_000_000
@@ -240,3 +272,47 @@ class TestMessageBlocks:
                 expected += ["", f"[dim]HH:MM {'─' * 36}[/dim]"]
             expected += b.lines
         assert lines == expected
+
+
+class TestDateSeparators:
+    def test_labels(self) -> None:
+        jour = 24 * 60 * 60 * 1000
+        now = 1_700_000_000_000
+        assert day_label(now, now_ms=now) == "Today"
+        assert day_label(now - jour, now_ms=now) == "Yesterday"
+
+    def test_old_date_is_numeric(self) -> None:
+        now = 1_700_000_000_000
+        old = day_label(now - 400 * 24 * 60 * 60 * 1000, now_ms=now)
+        assert "/" in old and not old.isalpha()
+
+    def test_recent_days_use_french_weekday_names(self) -> None:
+        # `strftime("%A")` would follow the process locale and could
+        # disagree with the UI; weekday names are pinned like the rest of it.
+        # 2024-01-01 is a Monday.
+        lundi = date(2024, 1, 1)
+        assert [
+            weekday_name(lundi + timedelta(days=i))
+            for i in range(7)
+        ] == [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ]
+
+    def test_separator_line_has_the_label(self) -> None:
+        sep = format_date_separator(1_700_000_000_000)
+        assert sep.startswith("[dim]─── ") and sep.endswith("[/dim]")
+
+    def test_no_separator_without_timestamps(self) -> None:
+        assert needs_date_separator(0, 0) is False
+        assert needs_date_separator(0, 1_700_000_000_000) is False
+        assert needs_date_separator(1_700_000_000_000, 0) is False
+
+    def test_same_day_no_separator(self) -> None:
+        base = 1_700_000_000_000
+        assert needs_date_separator(base, base + 1000) is False

@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timezone
 from typing import Callable
 
 from rich.markup import escape
@@ -79,6 +79,7 @@ class MessageBlock:
     lines: list[str]
     is_continuation: bool = False
     gap_before: bool = False
+    date_before: bool = False
 
 
 @dataclass
@@ -92,6 +93,9 @@ class TimelineContext:
 
     last_sender: str | None = None
     last_time_ms: int = 0
+    # Date du dernier message rendu (timestamp) : sert à insérer un séparateur
+    # de journée. Non utilisé pour le groupage, qui ne dépend que du silence.
+    last_day_ms: int = 0
 
 
 def interval_time_gap(prev_ms: int, curr_ms: int) -> bool:
@@ -115,6 +119,88 @@ def body_mentions_user(body: str, user_id: str) -> bool:
         if token in body:
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Séparateurs de date
+# ---------------------------------------------------------------------------
+
+
+def local_date(time_ms: int) -> date:
+    """Date LOCALE d'un timestamp Matrix (ms UTC).
+
+    Les timestamps de la spec sont en UTC, mais « Aujourd'hui » et « 03:18 »
+    doivent suivre le fuseau de l'utilisateur : on explicite la conversion
+    plutôt que de laisser `fromtimestamp()` deviner.
+    """
+    return datetime.fromtimestamp(time_ms / 1000, tz=timezone.utc).astimezone().date()
+
+
+def local_today() -> date:
+    """Date locale du jour, même conversion explicite que `local_date`."""
+    return datetime.now(tz=timezone.utc).astimezone().date()
+
+
+# Weekday names in English, matching the rest of the UI. `strftime("%A")`
+# would follow the process locale and could disagree with it.
+_WEEKDAYS = (
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+)
+
+
+def weekday_name(day: date) -> str:
+    return _WEEKDAYS[day.weekday()]
+
+
+def local_time_label(timestamp_ms: int) -> str:
+    """Heure locale au format `HH:MM` d'un timestamp Matrix."""
+    return datetime.fromtimestamp(
+        timestamp_ms / 1000, tz=timezone.utc
+    ).astimezone().strftime("%H:%M")
+
+
+def day_label(time_ms: int, *, now_ms: int | None = None) -> str:
+    """Readable day label: 'Today', 'Yesterday', or the date.
+
+    Les deux cas proches sont nommés en toutes lettres (c'est ce qu'on cherche
+    à lire dans une timeline) ; au-delà on retombe sur la date courte. La
+    comparaison se fait sur la DATE LOCALE, pas sur l'UTC : « aujourd'hui » doit
+    suivre le fuseau de l'utilisateur, pas celui du serveur.
+    """
+    if not time_ms:
+        return "Unknown date"
+    day = local_date(time_ms)
+    today = local_date(now_ms) if now_ms is not None else local_today()
+    delta = (today - day).days
+    if delta == 0:
+        return "Today"
+    if delta == 1:
+        return "Yesterday"
+    if 1 < delta < 7:
+        return weekday_name(day)
+    return day.strftime("%d/%m/%Y")
+
+
+def format_date_separator(time_ms: int, *, now_ms: int | None = None) -> str:
+    """Day divider: `─── Today ─────`."""
+    label = day_label(time_ms, now_ms=now_ms)
+    tail = max(_GAP_DASHES - len(label) - 4, 3)
+    return f"[dim]─── {label} {'─' * tail}[/dim]"
+
+
+def needs_date_separator(prev_ms: int, curr_ms: int) -> bool:
+    """Vrai si les deux timestamps tombent sur deux jours différents."""
+    if not prev_ms or not curr_ms:
+        return False
+    prev = local_date(prev_ms)
+    curr = local_date(curr_ms)
+    return prev != curr
 
 
 def format_timeline_blocks(
@@ -145,6 +231,10 @@ def format_timeline_blocks(
     indent = _TIMELINE_INDENT
     for e in entries:
         gap = ctx.last_sender is not None and interval_time_gap(ctx.last_time_ms, e.time_ms)
+        # Le séparateur de journée est indépendant du silence : un message
+        #isolé à 23h59 puis un à 00h01 ne sont.distants que de 2 minutes mais
+        # changent de jour, donc le repère de date reste utile.
+        day_change = needs_date_separator(ctx.last_day_ms, e.time_ms)
         continuation = ctx.last_sender is not None and not gap and e.sender == ctx.last_sender
         lines: list[str] = []
         if not continuation:
@@ -156,10 +246,12 @@ def format_timeline_blocks(
                 lines=lines,
                 is_continuation=continuation,
                 gap_before=gap,
+                date_before=day_change,
             )
         )
         ctx.last_sender = e.sender
         ctx.last_time_ms = e.time_ms
+        ctx.last_day_ms = e.time_ms or ctx.last_day_ms
     return blocks, ctx
 
 
@@ -178,7 +270,10 @@ def format_timeline_entries(
     blocks, ctx = format_timeline_blocks(entries, ctx, header_for=header_for)
     out: list[str] = []
     for b in blocks:
-        if b.gap_before:
+        if b.date_before:
+            out.append("")
+            out.append(format_date_separator(b.entry.time_ms))
+        elif b.gap_before:
             ts = f"{b.entry.timestamp} " if b.entry.timestamp else ""
             out.append("")
             out.append(f"[dim]{ts}{'─' * _GAP_DASHES}[/dim]")
@@ -258,7 +353,7 @@ def highlight_mentions(markup: str, user_id: str) -> str:
 def _format_time(timestamp_ms: int | None) -> str:
     if not timestamp_ms:
         return ""
-    return datetime.fromtimestamp(timestamp_ms / 1000).strftime("%H:%M")
+    return local_time_label(timestamp_ms)
 
 
 def _fuzzy_score(query: str, candidate: str) -> float:
