@@ -7,6 +7,65 @@ on:
     branches: [main]
 
 jobs:
+  rust-core:
+    # The Rust core is optional at runtime, so the `test` job above runs
+    # without it (and the parity tests skip). This job is what keeps the Rust
+    # side honest: unit tests, wheel build, import, and parity against the
+    # Python implementation. It runs on a single Python version on purpose —
+    # abi3-py310 means one wheel covers 3.10 to 3.14, so the interesting
+    # matrix is per platform, not per minor (see the release workflow).
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: shelltrix-core/target
+          key: cargo-${{ hashFiles('shelltrix-core/Cargo.lock') }}
+
+      - name: Rust unit tests
+        working-directory: shelltrix-core
+        run: cargo test --locked
+
+      - name: Clippy and formatting
+        working-directory: shelltrix-core
+        run: |
+          cargo fmt --check
+          cargo clippy --locked -- -D warnings
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the abi3 wheel and install it
+        working-directory: shelltrix-core
+        run: |
+          pipx run maturin build --release --out dist
+          pip install dist/*.whl
+
+      - name: The extension imports and answers
+        run: |
+          python - <<'PY'
+          import shelltrix_core
+          assert shelltrix_core.core_version(), "no core version"
+          print("Rust core importable:", shelltrix_core.core_version())
+          PY
+
+      - name: Parity with the Python core
+        run: |
+          pip install -e ".[dev]"
+          python - <<'PY'
+          from shelltrix._core import rust_available, selected_backend
+          assert rust_available(), "the wheel is installed but not importable"
+          print("selected backend:", selected_backend())
+          PY
+          # The parity tests are the contract; they must not silently skip.
+          pytest tests/test_rust_core.py -v -rs
+
   test:
     runs-on: ubuntu-latest
     strategy:

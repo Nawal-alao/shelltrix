@@ -19,7 +19,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 /// One `m.room.message` of a `/sync` response.
-#[pyclass(frozen, get_all, module = "shelltrix_core")]
+#[pyclass(frozen, get_all, skip_from_py_object, module = "shelltrix_core")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncMessage {
     /// Full Matrix identifier of the author, `@alice:hs`.
