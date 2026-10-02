@@ -1,5 +1,5 @@
-"""Écran de connexion initial — une seule fois, ensuite le token est
-réutilisé automatiquement."""
+"""Initial login screen — once only, afterwards the access token is reused
+automatically."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 
 
 class LoginScreen(Screen):
-    """Écran de connexion initial (une seule fois, ensuite le token est
-    réutilisé automatiquement)."""
+    """Initial login screen (once only, afterwards the access token is
+    reused automatically)."""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="login-wrap"):
@@ -89,14 +89,14 @@ class LoginScreen(Screen):
         self._set_loading(True)
         try:
             creds = await ShelltrixClient.login(homeserver, user_id, password)
-        except Exception as exc:  # noqa: BLE001 — on affiche l'erreur à l'écran
+        except Exception as exc:  # noqa: BLE001 — surface the error on screen
             self._set_status(f"Connection failed: {exc}", kind="error")
             self._set_loading(False)
             return
 
         self._set_status("Connected, opening the chat…", kind="success")
         creds.save()
-        # Enregistrer dans le gestionnaire multi-comptes
+        # Register in the multi-account manager
         get_manager().add(creds)
         app: ShelltrixApp = self.app  # type: ignore[assignment]
         await app.start_chat(creds)

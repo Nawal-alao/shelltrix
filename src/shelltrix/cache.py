@@ -1,21 +1,21 @@
-"""Cache SQLite local des messages de timeline.
+"""Local SQLite cache of timeline messages.
 
-Persiste les `TimelineEntry` par salon (dédupliquées par `event_id`) afin de :
-  - ne pas perdre l'historique reçu via sync/scrollback à chaque fermeture ;
-  - afficher instantanément un salon déjà vu (offline-ish) avant même que le
-    scrollback serveur ne revienne.
+Persists the `TimelineEntry` per room (deduplicated by `event_id`) so that:
+  - history received via sync/scrollback is not lost on every shutdown;
+  - an already seen room shows up instantly (offline-ish) even before the
+    server scrollback comes back.
 
-Le cache est scopé par `user_id` (prêt pour le multi-comptes) et stocké dans
-`CONFIG_DIR/cache/`. Durcissement :
-  - répertoire en 0700 et base en 0600 (contenus privés) ;
-  - plafond de stockage (`MAX_CACHE_BYTES`) : au-delà, on purge les plus
-    vieux messages (garde `CACHE_KEEP_PER_ROOM` entrées max par salon) pour
-    ne jamais laisser le cache grossir sans limite.
+The cache is scoped by `user_id` (ready for multi-account) and stored in
+`CONFIG_DIR/cache/`. Hardening:
+  - directory at 0700 and database at 0600 (private contents);
+  - storage cap (`MAX_CACHE_BYTES`): beyond it, we purge the oldest
+    messages (keeping `CACHE_KEEP_PER_ROOM` entries max per room) so the
+    cache never grows without bound.
 
-SÉCURITÉ : les corps de messages sont stockés EN CLAIR (recherche SQL
-nécessaire). Le cache dépend donc du périmètre du compte local + permissions ;
-pour une protection au repos du support complet, il faut un chiffrement de
-disque (LUKS/FileVault). Le store E2EE, lui, est chiffré (Fernet).
+SECURITY: message bodies are stored IN PLAINTEXT (SQL search requires it).
+The cache therefore depends on the local account perimeter + permissions;
+for at-rest protection of the whole medium, disk encryption is required
+(LUKS/FileVault). The E2EE store, on the other hand, is encrypted (Fernet).
 """
 
 from __future__ import annotations
@@ -26,13 +26,13 @@ from pathlib import Path
 from .config import CONFIG_DIR
 from .formatting import TimelineEntry
 
-# Garde-fous : plafond du fichier cache et entrées conservées par salon.
-# 128 Mo sur disque, 4000 messages par salon (défaut, surchargeable via les
-# constantes — il n'y a pas encore de clé de config dédiée).
+# Guardrails: cache file size cap and entries kept per room.
+# 128 MB on disk, 4000 messages per room (default, overridable through the
+# constants — there is no dedicated config key yet).
 MAX_CACHE_BYTES = 128 * 1024 * 1024
 CACHE_KEEP_PER_ROOM = 4000
-# Fréquence du contrôle de taille : tous les N inserts (un stat() par message
-# serait trop coûteux).
+# Size check frequency: every N inserts (a stat() per message would be
+# too expensive).
 _PRUNE_EVERY = 64
 
 _EVENT_COLUMNS = (
@@ -52,9 +52,9 @@ _EVENT_COLUMNS = (
     "reply_to_name",
 )
 
-# Constantes SQL : les colonnes proviennent exclusivement de la constante
-# interne _EVENT_COLUMNS (aucune donnée utilisateur) et TOUTES les valeurs
-# passent par des placeholders "?" — pas de interpolation possible.
+# SQL constants: the columns come exclusively from the internal constant
+# _EVENT_COLUMNS (no user data) and ALL values go through "?" placeholders
+# — no interpolation possible.
 _ALWAYS_COLUMNS = ", ".join(_EVENT_COLUMNS)
 _ALWAYS_PLACEHOLDERS = ", ".join(["?"] * (len(_EVENT_COLUMNS) + 1))
 _UPSERT_SQL = (
@@ -92,11 +92,11 @@ def _cache_dir() -> Path:
 
 
 class MessageCache:
-    """Cache SQLite des messages d'un seul compte."""
+    """SQLite cache of a single account's messages."""
 
     def __init__(self, user_id: str, cache_dir: Path | None = None) -> None:
-        # Le user_id (@alice:hs) contient des caractères non-valides pour un nom
-        # de fichier ; on les neutralise pour un nom stable et sûr.
+        # The user_id (@alice:hs) contains characters invalid for a file
+        # name; we neutralize them for a stable, safe name.
         safe = user_id.replace("@", "at_").replace(":", "_").replace("/", "_")
         self.user_id = user_id
         if cache_dir is None:
@@ -104,9 +104,9 @@ class MessageCache:
         self.path = cache_dir / f"{safe}.db"
         self._conn = sqlite3.connect(str(self.path))
         self._conn.row_factory = sqlite3.Row
-        # Permissions durcies : base en 0600, mise en vigueur même sur un
-        # fichier pré-existant (l'utilisateur peut avoir créé la base avec
-        # un umask permissif).
+        # Hardened permissions: database at 0600, enforced even on a
+        # pre-existing file (the user may have created the database with
+        # a permissive umask).
         try:
             self.path.chmod(0o600)
         except OSError:
@@ -144,40 +144,40 @@ class MessageCache:
         self._conn.commit()
 
     def _migrate_schema(self) -> None:
-        """Ajoute les colonnes manquantes à une base préexistante.
+        """Adds the missing columns to a pre-existing database.
 
-        `CREATE TABLE IF NOT EXISTS` ne modifie pas une table déjà créée sur
-        disque : sans cette étape, une base issue d'une version antérieure
-        n'aurait pas les colonnes `reply_to_*` et tous les SELECT échoueraient.
-        On compare donc `PRAGMA table_info` à la liste attendue et on n'ajoute
-        que le manque, avec `DEFAULT ''` pour rester compatible NOT NULL.
+        `CREATE TABLE IF NOT EXISTS` does not modify a table already created
+        on disk: without this step, a database from an earlier version would
+        lack the `reply_to_*` columns and every SELECT would fail. We
+        therefore compare `PRAGMA table_info` with the expected list and only
+        add what is missing, with `DEFAULT ''` to stay NOT NULL compatible.
         """
         have = {row["name"] for row in self._conn.execute("PRAGMA table_info(messages)")}
         if not have:
-            return  # table absente : le CREATE ci-dessus vient de la créer
+            return  # table missing: the CREATE above just created it
         for column in _EVENT_COLUMNS:
             if column in have:
                 continue
-            # `column` vient de la constante interne _EVENT_COLUMNS, jamais
-            # d'une donnée utilisateur ; les valeurs restent paramétrées.
+            # `column` comes from the internal constant _EVENT_COLUMNS, never
+            # from user data; values stay parameterized.
             self._conn.execute(
                 f"ALTER TABLE messages ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"  # nosec B608
             )
 
     def _prune_if_oversized(self) -> None:
-        """Purge les plus vieux messages si le cache dépasse MAX_CACHE_BYTES.
+        """Purges the oldest messages if the cache exceeds MAX_CACHE_BYTES.
 
-        Conserve au plus `CACHE_KEEP_PER_ROOM` entrées par (user, room), en
-        gardant les plus récentes. Évite une base qui grossit sans limite
-        tout en préservant la recherche locale sur l'historique récent.
+        Keeps at most `CACHE_KEEP_PER_ROOM` entries per (user, room), by
+        keeping the most recent ones. Avoids a database growing without bound
+        while preserving local search over recent history.
         """
         try:
             if self.path.stat().st_size <= MAX_CACHE_BYTES:
                 return
         except OSError:
             return
-        # Classe les entrées par (user, room) par time_ms DESC puis ne garde
-        # que les CACHE_KEEP_PER_ROOM plus récentes (window function SQLite).
+        # Sorts entries per (user, room) by time_ms DESC then keeps
+        # only the CACHE_KEEP_PER_ROOM most recent (SQLite window function).
         self._conn.execute(
             "DELETE FROM messages WHERE rowid IN ("
             "  SELECT rowid FROM ("
@@ -191,7 +191,7 @@ class MessageCache:
         self._conn.commit()
 
     def upsert_entries(self, room_id: str, entries: list[TimelineEntry]) -> None:
-        """Insère ou remplace les entrées non vides par `event_id`."""
+        """Inserts or replaces the non-empty entries by `event_id`."""
         if not entries:
             return
         rows = []
@@ -219,15 +219,15 @@ class MessageCache:
             )
         self._conn.executemany(_UPSERT_SQL, rows)
         self._conn.commit()
-        # Plafond de stockage : contrôlé périodiquement pour éviter un stat()
-        # syscall à chaque message.
+        # Storage cap: checked periodically to avoid a stat() syscall on
+        # every message.
         self._insert_count += len(rows)
         if self._insert_count >= _PRUNE_EVERY:
             self._insert_count = 0
             self._prune_if_oversized()
 
     def load_entries(self, room_id: str) -> list[TimelineEntry]:
-        """Charge les entrées d'un salon, triées par timestamp croissant."""
+        """Loads a room's entries, sorted by ascending timestamp."""
         rows = self._conn.execute(
             _ROOM_SELECT_SQL,
             (self.user_id, room_id),
@@ -240,10 +240,10 @@ class MessageCache:
         room_id: str | None = None,
         limit: int = 200,
     ) -> list[TimelineEntry]:
-        """Recherche insensible à la casse dans le corps des messages.
+        """Case-insensitive search in the message bodies.
 
-        `room_id` restreint la recherche à un salon (None = tous). Résultats
-        triés du plus récent au plus ancien, plafonnés à `limit`.
+        `room_id` restricts the search to one room (None = all). Results
+        sorted from newest to oldest, capped at `limit`.
         """
         return [e for _, e in self.search_with_room(query, room_id, limit)]
 
@@ -253,10 +253,10 @@ class MessageCache:
         room_id: str | None = None,
         limit: int = 200,
     ) -> list[tuple[str, TimelineEntry]]:
-        """Comme `search_messages`, mais renvoie aussi le salon de chaque hit.
+        """Like `search_messages`, but also returns the room of each hit.
 
-        Chaque élément est `(room_id, entry)`, ce qui permet d'afficher le nom
-        du salon et de naviguer vers le message (recherche multi-salons).
+        Each element is `(room_id, entry)`, which lets us display the room
+        name and navigate to the message (multi-room search).
         """
         q = query.strip()
         if not q:
@@ -290,7 +290,7 @@ class MessageCache:
         )
 
     def clear_room(self, room_id: str) -> None:
-        """Efface les messages mis en cache d'un salon (ex. action clear)."""
+        """Erases a room's cached messages (e.g. clear action)."""
         self._conn.execute(
             "DELETE FROM messages WHERE user_id=? AND room_id=?",
             (self.user_id, room_id),

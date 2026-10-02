@@ -1,10 +1,10 @@
-"""Recherche dans l'historique local (messages en cache).
+"""Search in the local history (cached messages).
 
-Modal `SearchDialog` : on tape un mot-clé et on obtient une liste de
-correspondances parcourables (tous salons confondus). Sélectionner un
-résultat ouvre le salon correspondant et positionne la timeline sur le
-message. La recherche porte sur le cache SQLite local (`MessageCache`), donc
-uniquement sur les messages déjà téléchargés.
+`SearchDialog` modal: type a keyword and get a browsable list of matches
+(across all rooms). Selecting a result opens the matching room and
+positions the timeline on the message. The search runs against the local
+SQLite cache (`MessageCache`), so it only covers already downloaded
+messages.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 
 class SearchDialog(ModalScreen[None]):
-    """Recherche locale de messages avec navigation vers le résultat."""
+    """Local message search with navigation to the result."""
 
     BINDINGS = [
         ("escape", "dismiss", "Close"),

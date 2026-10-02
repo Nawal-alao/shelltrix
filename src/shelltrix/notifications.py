@@ -1,8 +1,8 @@
-"""Notifications desktop pour shelltrix.
+"""Desktop notifications for shelltrix.
 
-Utilise `notify-send` (Linux/BSD via libnotify) pour afficher une notification
-quand un message arrive dans un salon inactif. Désactivable via la config
-(`notifications_enabled`, défaut : activé).
+Uses `notify-send` (Linux/BSD via libnotify) to show a notification
+when a message arrives in an inactive room. Can be disabled through
+the config (`notifications_enabled`, default: enabled).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
 def is_enabled() -> bool:
-    """Vrai si les notifications desktop sont activées (défaut : True)."""
+    """True if desktop notifications are enabled (default: True)."""
     try:
         import json
 
@@ -27,11 +27,11 @@ def is_enabled() -> bool:
 
 
 def notify(room_name: str, sender: str, body: str) -> None:
-    """Envoie une notification desktop via notify-send.
+    """Sends a desktop notification via notify-send.
 
-    Silencieux si :
-    - les notifications sont désactivées dans la config
-    - notify-send n'est pas installé
+    Silent if:
+    - notifications are disabled in the config
+    - notify-send is not installed
     """
     if not is_enabled():
         return

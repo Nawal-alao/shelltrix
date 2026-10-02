@@ -1,12 +1,12 @@
-"""Widgets UI maison réutilisables, extraits de `app.py`.
+"""Reusable home-made UI widgets, extracted from `app.py`.
 
-`_SendButton` : bouton d'envoi « → » plat (un Static cliquable).
-`MessageView` : un message de la timeline dans un widget dédié — c'est ce
-qui rend possible le survol, le collapse d'un message long, les réactions et
-le reply ciblé (un `RichLog`, en écriture seule, ne le permet pas).
+`_SendButton`: flat "→" send button (a clickable Static).
+`MessageView`: one timeline message in a dedicated widget — this is what
+makes hover, collapsing a long message, reactions and targeted reply
+possible (a write-only `RichLog` does not allow it).
 
-Aucun import vers `app`, `screens` ou `dialogs` — ces widgets opèrent sur
-leur écran hôte par introspection.
+No import from `app`, `screens` or `dialogs` — these widgets operate on
+their host screen by introspection.
 """
 
 from __future__ import annotations
@@ -20,23 +20,23 @@ from textual.widgets import Input, Static
 
 from .formatting import MessageBlock
 
-# Nombre de lignes de corps visibles quand un message est replié. Au-delà,
-# un message long (logs,aits de code, listes) pousse les autres hors de
-# l'écran : le repli garde la conversation lisible sur les rooms actives.
+# Number of visible body lines when a message is folded. Beyond that,
+# a long message (logs, code snippets, lists) pushes the others off
+# screen: folding keeps the conversation readable on active rooms.
 COLLAPSED_LINES = 5
 
-# Largeur de la gouttière réservée à l'heure et au nom d'auteur. Doit rester
-# alignée sur la constante équivalente du rendu des blocs.
+# Width of the gutter reserved for the time and the author name. Must stay
+# aligned with the equivalent constant of the block rendering.
 _GUTTER_COLS = 8
 
 
 class _SendButton(Static):
-    """Bouton d'envoi « → » plat : un Static cliquable.
+    """Flat "→" send button: a clickable Static.
 
-    Un vrai Button Textual impose `line-pad >= 1` et une hauteur minimale de
-    3 lignes, ce qui rend son libellé illisible dans la barre de saisie
-    (hauteur 1). On remplace donc par un Static dont le clic relance le même
-    chemin d'envoi que la touche Entrée.
+    A real Textual Button enforces `line-pad >= 1` and a 3-line minimum
+    height, which makes its label unreadable in the input bar (height 1).
+    We therefore use a Static whose click triggers the same send path as
+    the Enter key.
     """
 
     def on_click(self, event: events.Click) -> None:
@@ -48,28 +48,28 @@ class _SendButton(Static):
 
 
 def _gutter(markup: str) -> Padding:
-    """Habille un corps de message dans la gouttière de la timeline.
+    """Dresses a message body into the timeline gutter.
 
-    L'indentation est appliquée PAR LE RENDU et non en insérant des espaces dans
-    la chaîne : c'est la seule façon de la conserver sur les lignes de
-    continuation après habillage à la largeur du terminal (des espaces en tête
-    de chaîne ne servent qu'à la première ligne).
+    The indentation is applied BY THE RENDERING and not by inserting spaces
+    in the string: this is the only way to keep it on the continuation
+    lines after wrapping to the terminal width (leading spaces in a string
+    only apply to the first line).
     """
     return Padding(Text.from_markup(markup), (0, 0, 0, _GUTTER_COLS))
 
 
 class MessageView(Vertical):
-    """Un message de la timeline (en-tête, citation, corps, réactions).
+    """A timeline message (header, quote, body, reactions).
 
-    Le widget porte les métadonnées du message (`event_id`, `sender`,
-    `is_own`) : les interactions futures (répondre, réagir, copier) se
-    ciblent par `event_id` et n'ont plus à re-parcourir le log.
+    The widget carries the message metadata (`event_id`, `sender`,
+    `is_own`): future interactions (reply, react, copy) target by
+    `event_id` and no longer have to walk the log again.
 
-    Le repli s'applique au CORPS seul — l'en-tête (heure + auteur) et les
-    réactions restent toujours visibles, sinon on perdrait l'information de
-    QUI a écrit quoi. Le corps est tronqué par `max-height` (donc sur de
-    vraies lignes rendues, pas sur une estimation de caractères) et un
-    « … voir plus » cliquable est ajouté en dessous.
+    Folding applies to the BODY only — the header (time + author) and the
+    reactions always stay visible, otherwise we would lose the information
+    of WHO wrote what. The body is truncated by `max-height` (so on real
+    rendered lines, not on a character estimate) and a clickable
+    "… see more" is added below.
     """
 
     DEFAULT_CSS = """
@@ -123,8 +123,8 @@ class MessageView(Vertical):
         self._collapsed = collapsed
 
     def compose(self) -> ComposeResult:
-        # Tout ce qui précède le corps (en-tête d'auteur, ligne de citation)
-        # va dans un seul widget : rien de tout cela n'est jamais tronqué.
+        # Everything before the body (author header, quote line)
+        # goes into a single widget: none of it is ever truncated.
         head = "\n".join(self.block.lines[:-1])
         reactions = Static(self._reactions_markup, classes="msg-reactions")
         reactions.display = bool(self._reactions_markup)
@@ -140,11 +140,11 @@ class MessageView(Vertical):
         self.set_class(collapsed, "-collapsed")
 
     def on_click(self, event: events.Click) -> None:
-        """Bascule le repli du corps quand on clique « … voir plus ».
+        """Toggles the body folding when "… see more" is clicked.
 
-        On teste `event.widget` (le widget réellement sous la souris) et non
-        `event.chain` : cette dernière ne contient que des décalages, pas les
-        widgets traversés.
+        We test `event.widget` (the widget actually under the mouse) and not
+        `event.chain`: the latter only contains offsets, not the widgets
+        traversed.
         """
         target = event.widget
         if target is not None and "msg-more" in target.classes:
@@ -152,11 +152,12 @@ class MessageView(Vertical):
             self._set_collapsed(False)
 
     def add_reaction(self, markup: str) -> None:
-        """Affiche une ligne de réactions sous le corps.
+        """Shows a reactions line below the body.
 
-        Le markup est mémorisé même si le widget n'existe pas encore : une
-        réaction peut arriver entre le montage du message et son compose. Dans
-        ce cas compose() lira la valeur à jour, donc rien n'est perdu.
+        The markup is memorized even if the widget does not exist yet: a
+        reaction can arrive between the mounting of the message and its
+        compose. In that case compose() reads the up-to-date value, so
+        nothing is lost.
         """
         self._reactions_markup = markup
         if self._reactions_widget is None:

@@ -1,15 +1,16 @@
-"""Thèmes de shelltrix.
+"""shelltrix themes.
 
-Deux thèmes permutables à la volée, style OpenCode Zen :
-- "opencode"     : fond quasi noir, accent orange pâle (#e59e72), ultra-flat
-- "matrix_green" : fond vert-noir, accent vert néon (#50fa7b)
+Two themes switchable on the fly, OpenCode Zen style:
+- "opencode"     : near-black background, pale orange accent (#e59e72),
+                   ultra-flat
+- "matrix_green" : green-black background, neon green accent (#50fa7b)
 
-Les valeurs restent exposées sous les noms de variables de shelltrix
-($bg, $pane, $surface, $primary, ...) pour que app.tcss n'en dépende pas.
-register_themes() enregistre aussi les variables standards de Textual
-($background, $foreground, $surface, $panel, $primary, ...) dont dépendent
-les widgets internes (Input, Button, ...). Le thème actif est persisté dans
-~/.config/shelltrix/config.json et rechargé au démarrage.
+The values stay exposed under the shelltrix variable names
+($bg, $pane, $surface, $primary, ...) so app.tcss does not depend on them.
+register_themes() also registers the standard Textual variables
+($background, $foreground, $surface, $panel, $primary, ...) that the
+built-in widgets depend on (Input, Button, ...). The active theme is
+persisted in ~/.config/shelltrix/config.json and reloaded at startup.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from .config import CONFIG_DIR
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_NAME = "opencode"
 
-# Ordre de cycle de /theme.
+# Cycle order of /theme.
 THEME_ORDER = ("opencode", "matrix_green")
 
 
@@ -117,7 +118,7 @@ def label(name: str) -> str:
 
 
 def cycle(name: str) -> str:
-    """Prochain thème dans l'ordre, sans passer par le même."""
+    """Next theme in the order, without going through the same one."""
     if name not in THEME_ORDER:
         return THEME_ORDER[0]
     return THEME_ORDER[(THEME_ORDER.index(name) + 1) % len(THEME_ORDER)]
@@ -164,7 +165,7 @@ def border() -> str:
 
 
 def register_themes(app: App) -> None:
-    """Enregistre tous les thèmes et expose nos variables CSS."""
+    """Registers all themes and exposes our CSS variables."""
     for s in THEMES.values():
         variables = {
             "bg": s.bg,
@@ -204,12 +205,12 @@ def register_themes(app: App) -> None:
 
 
 def activate(app: App, name: str | None = None) -> str:
-    """Active le thème demandé (ou persisté) sur `app`, à faire AVANT
-    le premier montage pour que les variables CSS existent à la compile.
+    """Activates the requested (or persisted) theme on `app`, to be done
+    BEFORE the first mount so the CSS variables exist at compile time.
 
-    Note Textual 8 : les handlers de messages (dont on_mount) sont
-    dispatchés sur toute la MRO. Chaque App doit donc n'appeler
-    activate() qu'une seule fois dans son __init__."""
+    Textual 8 note: message handlers (including on_mount) are dispatched
+    over the whole MRO. Each App must therefore call activate() only once
+    in its __init__."""
     register_themes(app)
     chosen = load_pref() if name is None else name
     app.theme = chosen if chosen in THEMES else DEFAULT_NAME
@@ -218,7 +219,7 @@ def activate(app: App, name: str | None = None) -> str:
 
 
 def load_pref() -> str:
-    """Thème persisté, ou le défaut s'il est inconnu/absent."""
+    """Persisted theme, or the default if unknown/absent."""
     try:
         data = json.loads(CONFIG_FILE.read_text())
         name = data.get("theme")
@@ -235,5 +236,5 @@ def save_pref(name: str) -> None:
         CONFIG_FILE.write_text(json.dumps({"theme": name}, indent=2))
         CONFIG_FILE.touch()
     except OSError:
-        # La persistance échoue (FS en lecture seule) : on reste fonctionnel.
+        # Persistence fails (read-only FS): we stay functional.
         pass

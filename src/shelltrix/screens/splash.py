@@ -1,8 +1,8 @@
-"""Splash screen — bannière "SHELLTRIX" en bloc ASCII fixe, dégradé de thème sobre
-(muted → text, lettre initiale en primary), révélation en cascade du logo,
-typage discret de la tagline, auto-transition vers login/chat.
-Réservé à la toute première utilisation (cf. config.first_run_done()).
-Aucune couleur en dur : tout vient des tokens du thème actif."""
+"""Splash screen — fixed ASCII block "SHELLTRIX" banner, sober theme
+gradient (muted → text, initial letter in primary), cascading logo
+reveal, discreet typing of the tagline, auto-transition to login/chat.
+Reserved for the very first run (cf. config.first_run_done()).
+No hard-coded color: everything comes from the active theme tokens."""
 
 from __future__ import annotations
 
@@ -19,37 +19,37 @@ from textual.widgets import Static
 from .. import __version__, themes
 
 
-# --- Constantes d'animation (aucune couleur ici : viole la règle absolue) ---
-_TAGLINE = "secure · private · minimal"   # texte tapé dans la tagline
-_FADE_MS = 0.5                            # durée de la révélation du logo
-_FADE_STEPS = 12                          # trames du balayage (colonne→colonne)
-_TAG_WAIT = 0.3                           # pause entre révélation et frappe
-_TAG_TICK = 0.05                          # cadence d'apparition des lettres
-_AUTO_MS = 3.0                            # auto-transition (laisse le temps
-                                          # de voir la séquence complète)
+# --- Animation constants (no color here: violates the absolute rule) ---
+_TAGLINE = "secure · private · minimal"   # text typed into the tagline
+_FADE_MS = 0.5                            # logo reveal duration
+_FADE_STEPS = 12                          # sweep frames (column→column)
+_TAG_WAIT = 0.3                           # pause between reveal and typing
+_TAG_TICK = 0.05                          # letter appearance rate
+_AUTO_MS = 3.0                            # auto-transition (leaves time
+                                          # to watch the full sequence)
 
 
 def _lerp(percent: float, start: tuple[int, int, int], end: tuple[int, int, int]) -> tuple[int, int, int]:
-    """Interpole deux couleurs RGB en 0..255 selon `percent` dans [0, 1]."""
+    """Interpolates two RGB colors in 0..255 by `percent` in [0, 1]."""
     return tuple(
         round(a + (b - a) * percent) for a, b in zip(start, end)
     )
 
 
 def _to_rgb(hex_color: str) -> tuple[int, int, int] | None:
-    """'#rrggbb' -> (r, g, b), ou None si la valeur est invalide.
+    """'#rrggbb' -> (r, g, b), or None if the value is invalid.
 
-    Les tokens du thème ($muted, $text, $primary...) produisent toujours
-    des hex valides ; None est un garde-fou pur (aucune couleur en dur ici)."""
+    Theme tokens ($muted, $text, $primary...) always produce valid hex
+    values; None is a pure guardrail (no hard-coded color here)."""
     try:
         return tuple(int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
     except (ValueError, TypeError):
         return None
 
 
-# Bloc ASCII fixe "SHELLTRIX" (6 lignes × 66 colonnes). Il ne provient plus
-# d'une police générée (pyfiglet) : tracé à la main, bon pour les deux
-# thèmes. Fixe par nature → pas de rétrécissement sous 66 colonnes.
+# Fixed "SHELLTRIX" ASCII block (6 lines × 66 columns). It no longer comes
+# from a generated font (pyfiglet): hand-drawn, good for both themes.
+# Fixed by nature → no shrinking below 66 columns.
 _LOGO_ART = r"""███████╗██╗  ██╗███████╗██╗     ██╗  ████████╗██████╗ ██╗██╗  ██╗
 ██╔════╝██║  ██║██╔════╝██║     ██║  ╚══██╔══╝██╔══██╗██║╚██╗██╔╝
 ███████╗███████║█████╗  ██║     ██║     ██║   ██████╔╝██║ ╚███╔╝ 
@@ -62,18 +62,18 @@ _LOGO_COLS = max(len(line) for line in _LOGO_ART.rstrip("\n").split("\n"))
 
 
 def _splash_art(reveal_cols: int | None = None) -> Text:
-    """Bannière 'SHELLTRIX' : dégradé sobre $muted → $text sur tout le logo,
-    sans lettre accentuée.
+    """'SHELLTRIX' banner: sober $muted → $text gradient over the whole
+    logo, with no accent letter.
 
-    Si `reveal_cols` est fourni, les colonnes ≥ reveal_cols sont rendues en
-    $bg (invisibles) : balayage net de gauche à droite pour la révélation."""
+    If `reveal_cols` is given, columns ≥ reveal_cols are rendered in
+    $bg (invisible): a clean left-to-right sweep for the reveal."""
     spec = themes.spec()
     start = _to_rgb(spec.muted)
     end = _to_rgb(spec.text)
     art = _LOGO_ART.rstrip("\n")
     lines = art.split("\n")
     if start is None or end is None:
-        # Garde-fou : le thème est invalide, on rend le texte sans couleur.
+        # Guardrail: invalid theme, render the text with no color.
         out = Text(art)
     else:
         total = sum(len(line) for line in lines)
@@ -87,8 +87,8 @@ def _splash_art(reveal_cols: int | None = None) -> Text:
             if idx < len(lines) - 1:
                 out.append("\n")
 
-    # Révélation : colonnes pas encore révélées → $bg (invisibles), les
-    # colonnes déjà révélées gardent leur dégradé.
+    # Reveal: not-yet-revealed columns → $bg (invisible), already revealed
+    # columns keep their gradient.
     if reveal_cols is not None:
         line_start = 0
         for idx, line in enumerate(lines):
@@ -103,7 +103,7 @@ def _splash_art(reveal_cols: int | None = None) -> Text:
 
 
 class SplashScreen(Screen):
-    """Bannière de démarrage : ASCII art animé puis entrée dans l'app."""
+    """Startup banner: animated ASCII art then entry into the app."""
 
     BINDINGS = [
         ("escape", "skip", "Skip"),
@@ -116,9 +116,9 @@ class SplashScreen(Screen):
         self._animation_started = False
         self._tagline: Static | None = None
         self._typed = 0
-        # Timers de l'animation : toujours stockés, toujours arrêtés
-        # explicitement (.stop()) — jamais via la valeur de retour du callback
-        # (`return False` est ignoré par Textual 8.2.8).
+        # Animation timers: always stored, always stopped explicitly
+        # (.stop()) — never via the callback return value
+        # (`return False` is ignored by Textual 8.2.8).
         self._fade_timer: Timer | None = None
         self._wait_timer: Timer | None = None
         self._typing_timer: Timer | None = None
@@ -127,8 +127,8 @@ class SplashScreen(Screen):
     def compose(self) -> ComposeResult:
         with Vertical(id="splash-wrap"):
             with Vertical(id="splash-group"):
-                yield Static(_splash_art(0), id="splash-art")  # révélée à l'animation
-                yield Static("", id="splash-sub")  # remplie par la frappe
+                yield Static(_splash_art(0), id="splash-art")  # animated reveal
+                yield Static("", id="splash-sub")  # filled by the typing
                 yield Static("enter   continue\nesc     skip", id="splash-hint")
             yield Static("shelltrix // encrypted", id="splash-detail")
             yield Static(f"v{__version__}", id="splash-version")
@@ -142,20 +142,20 @@ class SplashScreen(Screen):
         self._auto_timer = self.set_timer(_AUTO_MS, self._launch)
 
     def on_unmount(self) -> None:
-        # Filet de sécurité : si le screen est un jour popé, plus aucun timer
-        # ne survivra (idempotent — stop() sur un timer déjà arrêté est sans
-        # effet).
+        # Safety net: if the screen is ever popped, no timer survives
+        # (idempotent — stop() on an already stopped timer is a
+        # no-op).
         self._stop_animation()
 
     def _adapt_layout(self) -> None:
-        """Adaptation discrète aux petits terminaux : le CSS Textual n'a pas
-        de media queries, on bascule donc des classes compacts en Python.
+        """Discreet adaptation to small terminals: Textual CSS has no media
+        queries, so compact classes are toggled in Python instead.
 
-        Le bloc complet (logo + tagline + hint + marges) tient en 17 lignes ;
-        en dessous on serre d'abord le hint ('splash-squeeze', 15-16 lignes),
-        puis on le masque et resserre la tagline ('splash-tiny', < 15).
-        En largeur, le logo est un bloc fixe de 66 colonnes : sous 66 on le
-        cache ('-splash-no-logo') plutôt que de tronquer son bord droit."""
+        The full block (logo + tagline + hint + margins) fits in 17 lines;
+        below that we first tighten the hint ('splash-squeeze', 15-16
+        lines), then hide it and tighten the tagline ('splash-tiny', < 15).
+        In width, the logo is a fixed 66-column block: below 66 we hide it
+        ('-splash-no-logo') rather than truncate its right edge."""
         if self.size.width < 66:
             self.add_class("-splash-no-logo")
         h = self.size.height
@@ -166,15 +166,15 @@ class SplashScreen(Screen):
             self.add_class("-splash-tiny")
 
     def _animate_logo(self) -> None:
-        """Révélation du logo colonne par colonne (gauche → droite), puis
-        enchaîne la frappe de la tagline.
+        """Reveal of the logo column by column (left → right), then chain
+        into the tagline typing.
 
-        Les colonnes pas encore révélées sont rendues en $bg (invisibles,
-        même technique que le curseur éteint de la tagline) : un balayage
-        net plutôt qu'un fondu d'opacité flou. Aucun nouveau timer :
-        _fade_timer garde sa cadence existante, seule la logique de rendu
-        par trame change. Le timer est stocké et stoppé explicitement à la
-        dernière trame."""
+        Not-yet-revealed columns are rendered in $bg (invisible, same
+        technique as the tagline's extinguished cursor): a clean sweep
+        rather than a blurry opacity fade. No new timer: _fade_timer
+        keeps its existing cadence, only the per-frame rendering logic
+        changes. The timer is stored and stopped explicitly on the last
+        frame."""
         self._art = self.query_one("#splash-art", Static)
         self._art.update(_splash_art(0))
         self._fade_step = 0
@@ -184,18 +184,18 @@ class SplashScreen(Screen):
         if not self.is_mounted:
             return
         self._fade_step += 1
-        # Colonnes révélées à cette trame (sur les _LOGO_COLS au total, arrondi
-        # vers le haut pour finir exactement sur le logo complet).
+        # Columns revealed on this frame (out of _LOGO_COLS in total, rounded
+        # up to end exactly on the full logo).
         revealed = min(_LOGO_COLS, (_LOGO_COLS * self._fade_step + _FADE_STEPS - 1) // _FADE_STEPS)
         self._art.update(_splash_art(revealed))
         if self._fade_step < _FADE_STEPS:
             return
         self._stop_timer(self._fade_timer)
-        # Chaîne en AVAL, une seule fois : pause puis frappe de la tagline.
+        # Chain runs DOWN, once only: pause then tagline typing.
         self._wait_timer = self.set_timer(_TAG_WAIT, self._begin_typing)
 
     def _stop_timer(self, timer: Timer | None) -> None:
-        """Arrête un timer s'il existe (guard contre None)."""
+        """Stops a timer if it exists (guard against None)."""
         if timer is not None:
             timer.stop()
 
@@ -209,7 +209,7 @@ class SplashScreen(Screen):
 
     @staticmethod
     def _tagline_text(body: str) -> Text:
-        """Tagline en $muted, sans curseur au bout (largeur stable)."""
+        """Tagline in $muted, with no trailing cursor (stable width)."""
         spec = themes.spec()
         muted = Style(color=spec.muted)
         return Text(body, style=muted)
@@ -222,12 +222,12 @@ class SplashScreen(Screen):
         self._tagline.update(self._tagline_text(_TAGLINE[: self._typed]))
         if self._typed < len(_TAGLINE):
             return
-        # Texte entièrement tapé : la frappe s'arrête là, sans curseur —
-        # aucun relance de la chaîne.
+        # Text fully typed: typing stops there, no cursor —
+        # the chain is never restarted.
         self._stop_timer(self._typing_timer)
 
     def _stop_animation(self) -> None:
-        """Arrête tous les timers d'animation encore actifs (guards None)."""
+        """Stops every still-running animation timer (None guards)."""
         if self._fade_timer is not None:
             self._fade_timer.stop()
         if self._wait_timer is not None:

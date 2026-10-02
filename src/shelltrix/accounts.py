@@ -1,8 +1,8 @@
-"""Gestion multi-comptes pour shelltrix.
+"""Multi-account management for shelltrix.
 
-Permet de sauvegarder plusieurs comptes Matrix et de commuter entre eux.
-Les identifiants sont stockés dans ~/.config/shelltrix/accounts.json (métadonnées)
-et les tokens dans le keyring système.
+Lets you save several Matrix accounts and switch between them.
+Credentials are stored in ~/.config/shelltrix/accounts.json (metadata)
+and the tokens in the system keyring.
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ ACCOUNTS_FILE = CONFIG_DIR / "accounts.json"
 
 @dataclass
 class AccountInfo:
-    """Informations légères d'un compte (sans secrets)."""
+    """Lightweight account information (no secrets)."""
     user_id: str
     homeserver: str
     device_id: str
-    label: str  # Nom d'affichage (ex: "Alice @ matrix.org")
+    label: str  # Display name (e.g. "Alice @ matrix.org")
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -34,14 +34,14 @@ class AccountInfo:
 
 
 class AccountManager:
-    """Gère la liste des comptes sauvegardés."""
+    """Manages the list of saved accounts."""
 
     def __init__(self) -> None:
         self._accounts: List[AccountInfo] = []
         self._load()
 
     def _load(self) -> None:
-        """Charge la liste des comptes depuis accounts.json."""
+        """Loads the account list from accounts.json."""
         if not ACCOUNTS_FILE.exists():
             self._accounts = []
             return
@@ -52,7 +52,7 @@ class AccountManager:
             self._accounts = []
 
     def _save(self) -> None:
-        """Persiste la liste des comptes."""
+        """Persists the account list."""
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         data = {"accounts": [a.to_dict() for a in self._accounts]}
         ACCOUNTS_FILE.write_text(json.dumps(data, indent=2))
@@ -66,15 +66,15 @@ class AccountManager:
         return len(self._accounts)
 
     def get(self, user_id: str) -> AccountInfo | None:
-        """Récupère un compte par user_id."""
+        """Fetches an account by user_id."""
         for acc in self._accounts:
             if acc.user_id == user_id:
                 return acc
         return None
 
     def add(self, creds: Credentials) -> AccountInfo:
-        """Ajoute un compte à la liste (ou remplace si existe déjà)."""
-        # Supprimer l'ancien entry si existe
+        """Adds an account to the list (or replaces it if already there)."""
+        # Drop the old entry if it exists
         self._accounts = [a for a in self._accounts if a.user_id != creds.user_id]
         label = _make_label(creds.user_id, creds.homeserver)
         info = AccountInfo(
@@ -88,12 +88,12 @@ class AccountManager:
         return info
 
     def remove(self, user_id: str) -> None:
-        """Retire un compte de la liste (mais pas les creds/keyring)."""
+        """Removes an account from the list (but not the creds/keyring)."""
         self._accounts = [a for a in self._accounts if a.user_id != user_id]
         self._save()
 
     def load_credentials(self, user_id: str) -> Credentials | None:
-        """Charge complètement les creds d'un compte (avec token depuis keyring)."""
+        """Fully loads an account's creds (with token from keyring)."""
         acc = self.get(user_id)
         if acc is None:
             return None
@@ -101,12 +101,12 @@ class AccountManager:
 
 
 def _make_label(user_id: str, homeserver: str) -> str:
-    """Construit un label lisible : @alice — matrix.org."""
-    # Extraire le localpart de @alice:matrix.org
+    """Builds a readable label: @alice — matrix.org."""
+    # Extract the localpart of @alice:matrix.org
     short = user_id
     if ":" in user_id and user_id.startswith("@"):
         short = user_id.split(":", 1)[0]
-    # Extraire le domaine de https://matrix.org
+    # Extract the domain of https://matrix.org
     domain = homeserver
     if "://" in domain:
         domain = domain.split("://", 1)[1]
@@ -114,12 +114,12 @@ def _make_label(user_id: str, homeserver: str) -> str:
     return f"{short} — {domain}"
 
 
-# Instance globale
+# Global instance
 _manager: AccountManager | None = None
 
 
 def get_manager() -> AccountManager:
-    """Récupère l'instance globale du gestionnaire de comptes."""
+    """Returns the global account manager instance."""
     global _manager
     if _manager is None:
         _manager = AccountManager()

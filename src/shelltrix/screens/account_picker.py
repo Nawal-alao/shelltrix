@@ -1,9 +1,9 @@
-"""Écran de sélection de compte (multi-account).
+"""Account selection screen (multi-account).
 
-Affiche la liste des comptes sauvegardés et permet :
-- de se connecter avec un compte existant
-- d'ajouter un nouveau compte
-- de supprimer un compte de la liste
+Shows the list of saved accounts and allows:
+- signing in with an existing account
+- adding a new account
+- removing an account from the list
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from .login import LoginScreen
 
 
 class AccountPickerScreen(Screen):
-    """Écran de sélection parmi les comptes sauvegardés."""
+    """Selection screen among the saved accounts."""
 
     BINDINGS = [
         ("escape", "quit", "Quit"),
@@ -88,7 +88,7 @@ class AccountPickerScreen(Screen):
                 severity="error",
             )
             return
-        # Sauvegarder aussi dans credentials.json pour compatibilité
+        # Also save to credentials.json for compatibility
         creds.save()
         await self.app.start_chat(creds)
 

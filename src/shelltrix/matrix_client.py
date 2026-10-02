@@ -1,9 +1,9 @@
-"""Fine couche au-dessus de matrix-nio pour shelltrix.
+"""Thin layer on top of matrix-nio for shelltrix.
 
-Cette classe centralise tout ce qui touche au protocole Matrix : connexion,
-sync loop, envoi de messages, gestion basique du chiffrement (E2EE) et
-vérification par emoji. L'interface Textual ne parle jamais directement à
-`nio` — elle passe toujours par ici.
+This class centralizes everything touching the Matrix protocol: connection,
+sync loop, message sending, basic encryption handling (E2EE) and emoji
+verification. The Textual UI never talks directly to `nio` — it always
+goes through here.
 """
 
 from __future__ import annotations
@@ -36,16 +36,17 @@ from .config import Credentials, decrypt_store, encrypt_store, ensure_store_dir,
 MessageHandler = Callable[[MatrixRoom, RoomMessageText], Awaitable[None]]
 ImageHandler = Callable[[MatrixRoom, RoomMessageImage], Awaitable[None]]
 TypingHandler = Callable[[str, list[str]], Awaitable[None]]
-# Invitation reçue : (room_id, salle, inviteur)
+# Incoming invite: (room_id, room, inviter)
 InviteHandler = Callable[[str, MatrixRoom, str], Awaitable[None]]
-# Vérification par emoji : (transaction_id, user_id, device_id, emojis)
-# où emojis est une liste de (emoji, description).
+# Emoji verification: (transaction_id, user_id, device_id, emojis)
+# where emojis is a list of (emoji, description).
 SasRequestHandler = Callable[[str, str, str, list[tuple[str, str]]], Awaitable[None]]
-# Échec d'envoi (ex. appareils non vérifiés dans un salon chiffré) : (room_id, message)
+# Send failure (e.g. unverified devices in an encrypted room)
+# (room_id, message)
 SendErrorHandler = Callable[[str, str], Awaitable[None]]
-# Réaction reçue : (room, event_id du message cible, clé emoji, sender)
+# Incoming reaction: (room, target message event_id, emoji key, sender)
 ReactionHandler = Callable[[MatrixRoom, str, str, str], Awaitable[None]]
-# Premier sync terminé : l'UI peut rafraîchir sa liste de salons.
+# First sync done: the UI can refresh its room list.
 FirstSyncHandler = Callable[[], Awaitable[None]]
 
 
@@ -61,13 +62,13 @@ class ShelltrixClient:
     on_sas_request: SasRequestHandler | None = None
     on_send_error: SendErrorHandler | None = None
     on_reaction: ReactionHandler | None = None
-    # Premier sync terminé : l'UI rafraîchit alors sa liste de salons (les
-    # salons n'arrivent qu'avec la réponse du sync, pas au montage).
+    # First sync done: the UI then refreshes its room list (rooms only
+    # arrive with the sync response, not at mount time).
     on_first_sync: FirstSyncHandler | None = None
-    # Vrai dès que le premier sync a abouti (l'UI montée plus tard peut lire
-    # l'état au lieu d'attendre le callback).
+    # True as soon as the first sync succeeded (a UI mounted later can read
+    # the state instead of waiting for the callback).
     first_sync_done: bool = field(init=False, default=False)
-    # État exposé à l'UI (header) :
+    # State exposed to the UI (header):
     #   connecting → syncing → online | offline / reconnecting (backoff).
     sync_state: str = field(init=False, default="connecting")
 
@@ -99,12 +100,12 @@ class ShelltrixClient:
         self._ever_connected = False
 
     # ------------------------------------------------------------------
-    # Connexion
+    # Connection
     # ------------------------------------------------------------------
     @staticmethod
     async def login(homeserver: str, user_id: str, password: str) -> Credentials:
-        """Connexion initiale par mot de passe, produit des Credentials
-        réutilisables (access token + device id) pour les lancements suivants.
+        """Initial password login, produces reusable Credentials
+        (access token + device id) for subsequent runs.
         """
         store_path = str(ensure_store_dir())
         client = AsyncClient(homeserver=homeserver, user=user_id, store_path=store_path)
@@ -123,36 +124,35 @@ class ShelltrixClient:
         return creds
 
     def load_local_store(self) -> None:
-        """Déchiffre (si besoin) puis charge les clés E2EE locales.
-        Lève decrypt_store()/StoreLockedError quand la clé du store est
-        indisponible : l'UI propose alors la restauration par clé de
-        récupération."""
+        """Decrypts (if needed) then loads the local E2EE keys.
+        Raises decrypt_store()/StoreLockedError when the store key is
+        unavailable: the UI then offers restoration via the session
+        recovery key."""
         if self.client.olm is None or self._store_loaded:
             return
-        # Le store était chiffré au repos : on le restaure avant de lire les
-        # clés de session E2EE.
+        # The store was encrypted at rest: we restore it before reading the
+        # E2EE session keys.
         decrypt_store()
         self.client.load_store()
         self._store_loaded = True
 
     def start(self) -> None:
-        """Charge les clés de chiffrement locales et démarre la sync loop.
+        """Loads the local encryption keys and starts the sync loop.
 
-        Ne bloque JAMAIS : le premier sync (complet, pour peupler la liste des
-        salons) part en tâche de fond et l'UI s'affiche tout de suite. Le
-        premier sync mesuré sur matrix.org prenait ~10 s ; l'attendre ici
-        retardait d'autant le premier affichage. L'UI suit l'avancement via
-        `sync_state` et se rafraîchit sur `on_first_sync`."""
+        NEVER blocks: the first sync (full, to populate the room list) runs
+        as a background task and the UI shows up immediately. The first
+        sync measured on matrix.org took ~10 s; waiting for it here delayed
+        the first render by just as much. The UI tracks progress via
+        `sync_state` and refreshes on `on_first_sync`."""
         self.load_local_store()
         self.sync_state = "syncing"
         self._sync_task = asyncio.create_task(self._run_sync_forever())
 
     async def _fire_first_sync(self) -> None:
-        """Notifie l'UI que le premier sync a réussi (liste des salons pleine).
+        """Tells the UI the first sync succeeded (room list is full).
 
-        Isolé de la boucle de sync : une erreur de rafraîchissement côté UI ne
-        doit pas être confondue avec une panne réseau (backoff + statut
-        «offline»)."""
+        Isolated from the sync loop: a UI refresh error must not be mistaken
+        for a network outage (backoff + "offline" status)."""
         if self.on_first_sync is None:
             return
         try:
@@ -161,13 +161,13 @@ class ShelltrixClient:
             pass
 
     async def _run_sync_forever(self) -> None:
-        """Boucle de sync en tâche de fond, avec reconnexion automatique.
+        """Sync loop as a background task, with automatic reconnection.
 
-        matrix-nio ne se reconnecte pas tout seul sur une panne réseau : un
-        appel `sync()` qui lève (timeout réseau, 5xx, 429, connexion perdue)
-        ferait tomber la tâche et laisser l'app "offline" pour toujours.
-        Ici on ré-essaie avec un backoff exponentiel (1s → 30s max) et on
-        repasse à zéro dès qu'un sync aboutit.
+        matrix-nio does not reconnect on its own after a network outage: a
+        `sync()` call that raises (network timeout, 5xx, 429, lost connection)
+        would kill the task and leave the app "offline" forever.
+        Here we retry with an exponential backoff (1s → 30s max) and reset
+        it to zero as soon as a sync succeeds.
         """
         next_batch = getattr(self.client, "next_batch", None)
         delay = 1.0
@@ -187,16 +187,16 @@ class ShelltrixClient:
                     first_sync_done = True
                     self.first_sync_done = True
                     await self._fire_first_sync()
-                delay = 1.0  # succès : on remet l'horloge de backoff à zéro
-                # Laisse le champ libre à l'event loop entre deux itérations :
-                # évite une boucle serrée si le serveur répond instantanément.
+                delay = 1.0  # success: reset the backoff clock to zero
+                # Yield to the event loop between two iterations: avoids a
+                # tight loop if the server replies instantly.
                 await asyncio.sleep(0)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # Panne réseau / serveur : on signale l'état puis on attend.
-                # "reconnecting" si on était déjà en ligne (backoff en cours),
-                # sinon "offline" (jamais connecté au démarrage).
+                # Network / server outage: report the state, then wait.
+                # "reconnecting" if we were already online (backoff running),
+                # otherwise "offline" (never connected at startup).
                 if self._ever_connected:
                     self.sync_state = "reconnecting"
                 else:
@@ -208,9 +208,9 @@ class ShelltrixClient:
         if self._sync_task is not None:
             self._sync_task.cancel()
         await self.client.close()
-        # Clés de session E2EE protégées au repos après la fermeture.
-        # Un échec de persistance de la clé est signalé FORTEMENT : on ne
-        # quitte pas l'application en laissant le store en clair sans le dire.
+        # E2EE session keys are protected at rest after shutdown.
+        # A key persistence failure is reported LOUDLY: we do not quit the
+        # app leaving the store in plaintext without saying so.
         from .config import StoreEncryptionError
 
         try:
@@ -229,12 +229,12 @@ class ShelltrixClient:
     # Actions
     # ------------------------------------------------------------------
     async def _send(self, room_id: str, message_type: str, content: dict) -> None:
-        """Envoie un événement de salle en appliquant la politique de sécurité.
+        """Sends a room event, applying the security policy.
 
-        On n'ignore PAS les appareils non vérifiés : si le salon est chiffré
-        et qu'un contact n'a pas validé son appareil, nio refuse l'envoi
-        (LocalProtocolError). On le signale à l'UI plutôt que de transmettre
-        à un destinataire potentiellement compromis.
+        Unverified devices are NOT ignored: if the room is encrypted and a
+        contact has not verified their device, nio refuses the send
+        (LocalProtocolError). We report it to the UI instead of delivering to
+        a potentially compromised recipient.
         """
         try:
             await self.client.room_send(
@@ -252,13 +252,13 @@ class ShelltrixClient:
     async def send_message(
         self, room_id: str, body: str, *, reply_to_event_id: str = ""
     ) -> None:
-        """Envoie un message texte, éventuellement en réponse à un autre.
+        """Sends a text message, optionally as a reply to another one.
 
-        Quand `reply_to_event_id` est fourni, on pose les DEUX formes attendues
-        par la spec : la relation `m.in_reply_to` (lue par les clients
-        modernes) et le préfixe de repli `<@auteur> texte d'origine` dans le
-        corps (lue par les clients anciens, qui n'affichent que le corps).
-        `reply_fallback` est le point unique qui construit ce préfixe.
+        When `reply_to_event_id` is given, we set BOTH forms the spec
+        expects: the `m.in_reply_to` relation (read by modern clients) and
+        the fallback prefix `<@author> original text` in the body (read by
+        older clients, which only display the body).
+        `reply_fallback` is the single place that builds that prefix.
         """
         content: dict = {"msgtype": "m.text", "body": body}
         if reply_to_event_id:
@@ -269,7 +269,7 @@ class ShelltrixClient:
         await self._send(room_id, "m.room.message", content)
 
     async def send_emote(self, room_id: str, body: str) -> None:
-        """Commande /me : une action affichée en italique (* nom action)."""
+        """/me command: an action displayed in italics (* action name)."""
         await self._send(
             room_id,
             "m.room.message",
@@ -277,7 +277,7 @@ class ShelltrixClient:
         )
 
     async def react_to(self, room_id: str, event_id: str, reaction: str) -> None:
-        """Commande /react : pose une réaction (annotation) sur un message."""
+        """/react command: posts a reaction (annotation) on a message."""
         await self._send(
             room_id,
             "m.reaction",
@@ -293,17 +293,17 @@ class ShelltrixClient:
     async def fetch_reactions(
         self, room_id: str, event_id: str
     ) -> dict[str, str]:
-        """Relit les réactions d'un message via `/relations`.
+        """Re-reads a message's reactions via `/relations`.
 
-        Filet de sécurité : l'historique paginé contient normalement les
-        annotations, mais un message lu depuis le cache (redémarrage, hors
-        ligne) n'en a pas. Cette requête est donc la seule façon de les
-        retrouver à la demande. Renvoie `{sender: emoji}` — la forme canonique
-        de l'index, qui applique déjà les doublons et les changements d'emoji.
+        Safety net: the paginated history normally holds the annotations,
+        but a message read from the cache (restart, offline) does not.
+        This query is therefore the only way to get them back on demand.
+        Returns `{sender: emoji}` — the canonical form of the index, which
+        already deduplicates and applies emoji changes.
 
-        L'utilisateur n'a qu'une réaction par message : `/relations` renvoie
-        l'état courant, pas l'historique des retraits, ce qui évite d'avoir à
-        décompter les annulations.
+        A user only has one reaction per message: `/relations` returns the
+        current state, not the removal history, which avoids having to count
+        cancellations.
         """
         from nio.api import RelationshipType
 
@@ -318,9 +318,9 @@ class ShelltrixClient:
             sender = getattr(event, "sender", "") or ""
             if not sender:
                 continue
-            # Selon le serveur et l'âge de l'annotation, la relation arrive
-            # soit en `ReactionEvent` (`.key`), soit en `RoomMessageText` au
-            # corps vide : on lit les deux formes.
+            # Depending on the server and the age of the annotation, the
+            # relation arrives either as `ReactionEvent` (`.key`) or as a
+            # `RoomMessageText` with an empty body: we read both forms.
             key = getattr(event, "key", "") or ""
             if not key:
                 content = getattr(event, "source", {}).get("content", {})
@@ -330,18 +330,18 @@ class ShelltrixClient:
         return by_sender
 
     async def part_room(self, room_id: str, message: str | None = None) -> None:
-        """Commande /quit : quitte le salon (message d'adieu optionnel)."""
+        """/quit command: leaves the room (optional farewell message)."""
         if message:
             await self.send_message(room_id, message)
         await self.client.room_leave(room_id)
 
     async def send_image(self, room_id: str, path: str) -> None:
-        """Commande /sendimg : upload une image et l'envoie (chiffrée, comme
-        les messages E2EE)."""
+        """/sendimg command: uploads an image and sends it (encrypted, like
+        E2EE messages)."""
         file = Path(path).expanduser()
         if not file.is_file():
             if self.on_send_error is not None:
-                await self.on_send_error(room_id, f"Fichier introuvable : {path}")
+                await self.on_send_error(room_id, f"File not found: {path}")
             return
         mimetype = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
         size = file.stat().st_size
@@ -371,12 +371,12 @@ class ShelltrixClient:
         await self._send(room_id, "m.room.message", content)
 
     async def logout(self) -> None:
-        """Déconnecte de l'appareil : invalide le token côté serveur puis
-        efface les identifiants et le store local."""
+        """Logs out of the device: invalidates the token server-side, then
+        erases the credentials and the local store."""
         try:
             await self.client.logout()
         except Exception:
-            pass  # même hors-ligne, on nettoie localement
+            pass  # even offline, we still clean up locally
         await self.client.close()
         self.creds.remove()
         remove_store()
@@ -394,12 +394,12 @@ class ShelltrixClient:
         return self.client.rooms
 
     async def room_messages(self, room_id: str, start: str | None = None, limit: int = 50):
-        """Récupère l'historique d'un salon (scrollback) via pagination.
+        """Fetches a room's history (scrollback) via pagination.
 
-        `start` est un token de pagination : None pour les messages les plus
-        récents, ou un token `prev_batch` pour remonter plus loin dans le
-        temps. Retourne la réponse nio (`RoomMessagesResponse`) avec `.chunk`
-        (événements) et `.start`/`.end` (tokens), ou None en cas d'erreur.
+        `start` is a pagination token: None for the most recent messages,
+        or a `prev_batch` token to go further back in time. Returns the nio
+        response (`RoomMessagesResponse`) with `.chunk` (events) and
+        `.start`/`.end` (tokens), or None on error.
         """
         try:
             from nio import RoomMessagesResponse
@@ -412,27 +412,27 @@ class ShelltrixClient:
             return None
 
     async def verify_device_by_emoji(self, user_id: str, device_id: str) -> None:
-        """Démarre une vérification interactive par emoji avec un appareil
-        donné. Le SAS (Short Authentication String) est confirmé via
-        `confirm_short_auth_string` une fois que les deux côtés voient les
-        mêmes emojis.
+        """Starts an interactive emoji verification with a given device.
+        The SAS (Short Authentication String) is confirmed via
+        `confirm_short_auth_string` once both sides see the same
+        emojis.
         """
         await self.client.start_key_verification(user_id, device_id)
 
     async def confirm_sas(self, transaction_id: str) -> None:
-        """Confirme que les emojis correspondent (décision humaine)."""
+        """Confirms that the emojis match (human decision)."""
         await self.client.confirm_short_auth_string(transaction_id)
 
     async def reject_sas(self, transaction_id: str) -> None:
-        """Annule la vérification : le SAS ne correspond pas."""
+        """Cancels the verification: the SAS does not match."""
         await self.client.cancel_key_verification(transaction_id, reject=True)
 
     async def cancel_sas(self, transaction_id: str) -> None:
-        """Annule la vérification (abandon de l'utilisateur)."""
+        """Cancels the verification (user gave up)."""
         await self.client.cancel_key_verification(transaction_id, reject=False)
 
     # ------------------------------------------------------------------
-    # Callbacks internes (branchés sur nio)
+    # Internal callbacks (wired to nio)
     # ------------------------------------------------------------------
     async def _handle_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
         if self.on_message is not None:
@@ -443,12 +443,12 @@ class ShelltrixClient:
             await self.on_image(room, event)
 
     async def _handle_reaction(self, room: MatrixRoom, event: RoomMessage) -> None:
-        """Relaie les `m.reaction` (réponses en emoji) à l'UI.
+        """Relays `m.reaction` events (emoji replies) to the UI.
 
-        On écoute le type parent `RoomMessage` plutôt que la classe dédiée :
-        ainsi le callback ne déclenche que sur les annotations, qui portent
-        `m.relates_to` en `m.annotation` — sans quoi on serait notifié de
-        TOUS les messages.
+        We listen on the parent type `RoomMessage` rather than the dedicated
+        class: that way the callback only fires on annotations, which carry
+        `m.relates_to` as `m.annotation` — otherwise we would be notified of
+        ALL messages.
         """
         if self.on_reaction is None:
             return
@@ -473,17 +473,17 @@ class ShelltrixClient:
             await self.on_invite(room.room_id, room, event.sender)
 
     async def _handle_verification(self, event: KeyVerificationEvent) -> None:
-        # Vérification de la "short auth string" (SAS) : on n'accepte et ne
-        # confirme JAMAIS automatiquement. On affiche les emojis à l'écran et
-        # on attend une confirmation humaine explicite avant de valider.
+        # "Short auth string" (SAS) verification: we NEVER accept and
+        # NEVER confirm automatically. We display the emojis on screen and
+        # wait for an explicit human confirmation before validating.
         if isinstance(event, KeyVerificationStart):
             sas = self.client.key_verifications.get(event.transaction_id)
             if sas is None:
                 return
             await self.client.accept_key_verification(sas.transaction_id)
         elif isinstance(event, KeyVerificationKey):
-            # Le SAS est établi : les emojis sont désormais calculables.
-            # On les transmet à l'UI pour comparaison, sans confirmer.
+            # The SAS is established: the emojis are now computable.
+            # We pass them to the UI for comparison, without confirming.
             sas = self.client.key_verifications.get(event.transaction_id)
             if sas is None or self.on_sas_request is None:
                 return
@@ -492,5 +492,5 @@ class ShelltrixClient:
             await self.on_sas_request(
                 sas.transaction_id, device.user_id, device.id, emojis
             )
-        # KeyVerificationMac : rien à faire ici. nio ne vérifie l'appareil
-        # que si l'on a (déjà) validé les emojis via confirm_sas().
+        # KeyVerificationMac: nothing to do here. nio only verifies the
+        # device if we have (already) validated the emojis via confirm_sas().

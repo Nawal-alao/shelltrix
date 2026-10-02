@@ -1,10 +1,10 @@
-"""Formatage de texte pour l'interface shelltrix : timeline, markdown inline,
-heure et correspondance floue — fonctions pures, sans état Textual.
+"""Text formatting for the shelltrix interface: timeline, inline markdown,
+time and fuzzy matching — pure functions, no Textual state.
 
-Regroupe les helpers extraits de `app.py` :
+Groups the helpers extracted from `app.py`:
   _sender_color, _inline_markdown, _format_time, _fuzzy_score
-plus leurs constantes privées (palette de couleurs, regex markdown, regex
-d'URL). Dépend uniquement de `themes`.
+plus their private constants (color palette, markdown regexes, URL
+regex). Depends on `themes` only.
 """
 
 from __future__ import annotations
@@ -21,65 +21,65 @@ from rich.markup import escape
 from . import themes
 
 # ---------------------------------------------------------------------------
-# Timeline conversationnelle
+# Conversational timeline
 # ---------------------------------------------------------------------------
 
-# Un séparateur temporel (ligne + heure) sépare deux messages du même salon
-# quand le silence entre eux dépasse ce seuil.
+# A time separator (line + time) splits two messages from the same room
+# when the silence between them exceeds this threshold.
 TIME_GAP_SEPARATOR_MS = 5 * 60 * 1000
 
-# Indentation des lignes de la timeline : le corps est décalé pour que l'en-tête
-# d'auteur (heure + nom) et le texte des messages ne se confondent pas. Cette
-# largeur est aussi celle de la gouttière d'heure + 1 espace de respiration
-# (voir `_header_for` dans l'écran chat) : les deux colonnes s'alignent.
+# Indentation of timeline lines: the body is offset so the author header
+# (time + name) and the message text are not confused. This width is also
+# that of the time gutter + 1 breathing space (see `_header_for` in the chat
+# screen): both columns line up.
 _TIMELINE_INDENT = " " * 8
 
-# Longueur du filet du séparateur temporel.
+# Length of the time separator rule.
 _GAP_DASHES = 36
 
 
 @dataclass
 class TimelineEntry:
-    """Un message de la timeline, sous forme structurée.
+    """A timeline message, in structured form.
 
-    Le rendu (groupage par expéditeur, séparateurs temporels) est calculé à
-    l'affichage, pas stocké : c'est ce qui permet une conversation groupée
-    au lieu d'un journal répétitif.
+    Rendering (sender grouping, time separators) is computed at display
+    time, not stored: this is what allows a grouped conversation instead of
+    a repetitive log.
     """
 
-    sender: str  # user_id complet (@alice:hs)
-    display_name: str  # nom d'affichage résolu (pour le header du bloc)
+    sender: str  # full user_id (@alice:hs)
+    display_name: str  # resolved display name (for the block header)
     is_own: bool
-    time_ms: int  # timestamp serveur en millisecondes
-    body: str  # corps déjà échappé + markdown inline
-    event_id: str = ""  # identifiant serveur (dédup pagination/historique)
-    msgtype: str = "m.text"  # type de message (m.text, m.emote, m.image, …)
-    has_mention: bool = False  # vrai si ce message nous mentionne (@user)
+    time_ms: int  # server timestamp in milliseconds
+    body: str  # body already escaped + inline markdown
+    event_id: str = ""  # server identifier (pagination/history dedup)
+    msgtype: str = "m.text"  # message type (m.text, m.emote, m.image, …)
+    has_mention: bool = False  # true if this message mentions us (@user)
     is_image: bool = False
-    image_hint: str = ""  # ex. nom de fichier pour le placeholder
-    timestamp: str = field(default="")  # "HH:MM" pré-calculé
-    # Réponse à un autre message (m.in_reply_to). `reply_to_name` est résolu
-    # à la réception via l'index event_id → nom ; vide si le message cité est
-    # inconnu (hors historique), auquel cas aucune ligne de citation n'est
-    # rendue plutôt que d'afficher un nom deviné.
+    image_hint: str = ""  # e.g. filename for the placeholder
+    timestamp: str = field(default="")  # "HH:MM" precomputed
+    # Reply to another message (m.in_reply_to). `reply_to_name` is resolved
+    # on receipt through the event_id → name index; empty if the quoted
+    # message is unknown (outside history), in which case no quote line is
+    # rendered rather than showing a guessed name.
     reply_to_event_id: str = ""
     reply_to_name: str = ""
 
 
 @dataclass
 class MessageBlock:
-    """Un bloc de rendu de la timeline : UN message et son habillage.
+    """A timeline render block: ONE message and its dressing.
 
-    La timeline est faite de widgets (un par message) et non d'un flux de
-    lignes : c'est ce qui rend possible le survol, la sélection, la copie et
-    la réaction ciblée sur un message. `format_timeline_blocks` produit donc
-    des blocs, que `format_timeline_entries` aplatit ensuite en lignes.
+    The timeline is made of widgets (one per message) rather than a stream of
+    lines: this is what makes hover, selection, copy and targeted reaction on
+    a single message possible. `format_timeline_blocks` therefore produces
+    blocks, which `format_timeline_entries` then flattens into lines.
 
     Attributes:
-        entry: le message rendu (porte l'event_id, l'auteur, l'horodatage).
-        lines: markup Rich du bloc, en-tête compris sauf si `is_continuation`.
-        is_continuation: en-tête omis (même expéditeur, pas de silence).
-        gap_before: silence > seuil avant ce bloc → séparateur temporel.
+        entry: the rendered message (carries event_id, author, timestamp).
+        lines: block Rich markup, header included unless `is_continuation`.
+        is_continuation: header omitted (same sender, no silence).
+        gap_before: silence > threshold before this block → time separator.
     """
 
     entry: TimelineEntry
@@ -91,30 +91,30 @@ class MessageBlock:
 
 @dataclass
 class TimelineContext:
-    """État de groupage en cours pour un salon.
+    """Grouping state in progress for a room.
 
-    `last_sender`/`last_time_ms` reflètent la dernière entrée rendue : ils
-    servent à décider si la prochaine entrée continue le bloc courant, ouvre
-    un nouveau bloc, ou nécessite un séparateur temporel.
+    `last_sender`/`last_time_ms` reflect the last rendered entry: they
+    decide whether the next entry continues the current block, opens a new
+    block, or requires a time separator.
     """
 
     last_sender: str | None = None
     last_time_ms: int = 0
-    # Date du dernier message rendu (timestamp) : sert à insérer un séparateur
-    # de journée. Non utilisé pour le groupage, qui ne dépend que du silence.
+    # Date of the last rendered message (timestamp): used to insert a day
+    # separator. Not used for grouping, which only depends on silence.
     last_day_ms: int = 0
 
 
 def interval_time_gap(prev_ms: int, curr_ms: int) -> bool:
-    """Vrai si le silence entre deux messages dépasse le seuil (5 min)."""
+    """True if the silence between two messages exceeds the 5 min threshold."""
     return (curr_ms - prev_ms) >= TIME_GAP_SEPARATOR_MS
 
 
 def body_mentions_user(body: str, user_id: str) -> bool:
-    """Vrai si le corps du message mentionne explicitement `user_id`.
+    """True if the message body explicitly mentions `user_id`.
 
-    Reconnaît à la fois l'identifiant complet (`@local:serveur`) et le
-    localpart simple (`@local`). Fonction pure, testée.
+    Recognises both the full identifier (`@local:server`) and the plain
+    localpart (`@local`). Pure function, tested.
     """
     if not body or not user_id:
         return False
@@ -131,11 +131,11 @@ def body_mentions_user(body: str, user_id: str) -> bool:
 def reply_quote_line(entry: TimelineEntry) -> str:
     """Citation line « ┌─ replying to X » (empty when there is no reply).
 
-    La citation précède le corps : c'est l'ordre qui rend le contexte lisible
-    (Element, Discord). `┌─` indique visuellement une ligne suspendue
-    AU-DESSUS du message, ce qui correspond à sa position.
+    The quote precedes the body: that order is what makes the context
+    readable (Element, Discord). `┌─` visually indicates a line suspended
+    ABOVE the message, which matches its position.
 
-    Le nom est échappé : il vient du réseau (display_name arbitraire).
+    The name is escaped: it comes from the network (arbitrary display_name).
     """
     if not entry.reply_to_name:
         return ""
@@ -143,22 +143,22 @@ def reply_quote_line(entry: TimelineEntry) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Séparateurs de date
+# Date separators
 # ---------------------------------------------------------------------------
 
 
 def local_date(time_ms: int) -> date:
-    """Date LOCALE d'un timestamp Matrix (ms UTC).
+    """LOCAL date of a Matrix timestamp (ms UTC).
 
-    Les timestamps de la spec sont en UTC, mais « Aujourd'hui » et « 03:18 »
-    doivent suivre le fuseau de l'utilisateur : on explicite la conversion
-    plutôt que de laisser `fromtimestamp()` deviner.
+    Spec timestamps are in UTC, but "Today" and "03:18" must follow the
+    user's timezone: the conversion is made explicit rather than letting
+    `fromtimestamp()` guess.
     """
     return datetime.fromtimestamp(time_ms / 1000, tz=timezone.utc).astimezone().date()
 
 
 def local_today() -> date:
-    """Date locale du jour, même conversion explicite que `local_date`."""
+    """Local date of today, same explicit conversion as `local_date`."""
     return datetime.now(tz=timezone.utc).astimezone().date()
 
 
@@ -180,7 +180,7 @@ def weekday_name(day: date) -> str:
 
 
 def local_time_label(timestamp_ms: int) -> str:
-    """Heure locale au format `HH:MM` d'un timestamp Matrix."""
+    """Local time as `HH:MM` of a Matrix timestamp."""
     return datetime.fromtimestamp(
         timestamp_ms / 1000, tz=timezone.utc
     ).astimezone().strftime("%H:%M")
@@ -189,10 +189,10 @@ def local_time_label(timestamp_ms: int) -> str:
 def day_label(time_ms: int, *, now_ms: int | None = None) -> str:
     """Readable day label: 'Today', 'Yesterday', or the date.
 
-    Les deux cas proches sont nommés en toutes lettres (c'est ce qu'on cherche
-    à lire dans une timeline) ; au-delà on retombe sur la date courte. La
-    comparaison se fait sur la DATE LOCALE, pas sur l'UTC : « aujourd'hui » doit
-    suivre le fuseau de l'utilisateur, pas celui du serveur.
+    The two nearby cases are spelled out (that is what you look
+    for in a timeline); beyond that we fall back to the short date. The
+    comparison is done on the LOCAL DATE, not UTC: "today" must follow the
+    user's timezone, not the server's.
     """
     if not time_ms:
         return "Unknown date"
@@ -216,7 +216,7 @@ def format_date_separator(time_ms: int, *, now_ms: int | None = None) -> str:
 
 
 def needs_date_separator(prev_ms: int, curr_ms: int) -> bool:
-    """Vrai si les deux timestamps tombent sur deux jours différents."""
+    """True if the two timestamps fall on two different days."""
     if not prev_ms or not curr_ms:
         return False
     prev = local_date(prev_ms)
@@ -225,18 +225,18 @@ def needs_date_separator(prev_ms: int, curr_ms: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Réponses (m.in_reply_to)
+# Replies (m.in_reply_to)
 # ---------------------------------------------------------------------------
 
 
 def reply_target_of(content: Mapping[str, object]) -> str:
-    """Event_id du message cité par un `m.room.message`, ou "" .
+    """Event_id of the message quoted by an `m.room.message`, or "" .
 
-    Deux formes coexistent dans la spec Matrix :
-      - forme moderne : `m.relates_to.rel_type == "m.in_reply_to"` ;
-      - forme ancienne : `m.in_reply_to.event_id`.
-    On lit les deux. `content` est le dict `content` de l'événement brut —
-    fonction pure, testable sans réseau ni Textual.
+    Two forms coexist in the Matrix spec:
+      - modern form: `m.relates_to.rel_type == "m.in_reply_to"`;
+      - legacy form: `m.in_reply_to.event_id`.
+    Both are read. `content` is the raw event's `content` dict — a pure
+    function, testable without network or Textual.
     """
     relates = content.get("m.relates_to")
     if (
@@ -255,11 +255,11 @@ def reply_target_of(content: Mapping[str, object]) -> str:
 
 
 def reply_fallback(body: str, author: str) -> str:
-    """Préfixe de repli qu'exige la spec pour une réponse.
+    """Fallback prefix the spec requires for a reply.
 
-    Un client qui ne comprend pas `m.in_reply_to` n'affiche que le corps du
-    message : sans ce préfixe, la réponse perd tout contexte. La spec impose
-    `<@user_id> corps d'origine`. `author` est l'identifiant complet (@a:hs).
+    A client that does not understand `m.in_reply_to` only shows the message
+    body: without this prefix the reply loses all context. The spec mandates
+    `<@user_id> original body`. `author` is the full identifier (@a:hs).
     """
     if not author:
         return body
@@ -267,13 +267,13 @@ def reply_fallback(body: str, author: str) -> str:
 
 
 def strip_reply_fallback(body: str, author: str) -> str:
-    """Retire le préfixe de repli qu'on a soi-même posé à l'envoi.
+    """Strips the fallback prefix we set ourselves when sending.
 
-    Sans ce retrait, notre propre timeline afficherait le message d'origine
-    collé au texte de la réponse (le serveur l'y a mis pour les clients
-    anciens). On ne retire que le préfixe EXACT qu'on a construit, donc un
-    message qui commence légitimement par `<@alice:hs> …` n'est pas amputé
-    d'un texte qui n'était pas un repli.
+    Without this strip our own timeline would show the original message
+    glued to the reply text (the server put it there for older clients).
+    Only the EXACT prefix we built is removed, so a message legitimately
+    starting with `<@alice:hs> …` is not cut of text that was not a
+    fallback.
     """
     if not author:
         return body
@@ -281,17 +281,17 @@ def strip_reply_fallback(body: str, author: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Réactions
+# Reactions
 # ---------------------------------------------------------------------------
 
 
 def annotation_of(content: Mapping[str, object]) -> tuple[str, str]:
-    """`(event_id, clé)` d'une annotation `m.reaction`, ou `("", "")`.
+    """`(event_id, key)` of an `m.reaction` annotation, or `("", "")`.
 
-    Réponses et réactions partagent la même clé `m.relates_to` : seul `rel_type`
-    les sépare. Confondre les deux ferait afficher une citation comme une
-    réaction, et surtout ferait passer une réaction pour un message vide —
-    nio classe une annotation en `RoomMessageText` au corps vide.
+    Replies and reactions share the same `m.relates_to` key: only `rel_type`
+    separates them. Confusing the two would show a quote as a reaction,
+    and above all pass a reaction off as an empty message — nio classifies
+    an annotation as `RoomMessageText` with an empty body.
     """
     relates = content.get("m.relates_to")
     if not isinstance(relates, Mapping) or relates.get("rel_type") != "m.annotation":
@@ -304,12 +304,12 @@ def annotation_of(content: Mapping[str, object]) -> tuple[str, str]:
 
 
 def reaction_counts(by_sender: Mapping[str, str]) -> dict[str, int]:
-    """Compte les réactions par emoji à partir d'un index `sender -> clé`.
+    """Counts reactions per emoji from a `sender -> key` index.
 
-    On stocke l'AUTEUR et non un compteur incrémental parce que la spec
-    n'autorise qu'une réaction par utilisateur et par message : changer d'emoji
-    remplace l'ancien. Un simple `count += 1` cumulerait les deux et afficherait
-    « 👍 2 » pour une personne qui a juste changé d'avis.
+    We store the AUTHOR rather than an incremental counter because the spec
+    allows only one reaction per user per message: changing emoji replaces
+    the old one. A plain `count += 1` would accumulate both and show
+    "👍 2" for someone who merely changed their mind.
     """
     counts: dict[str, int] = {}
     for key in by_sender.values():
@@ -318,15 +318,15 @@ def reaction_counts(by_sender: Mapping[str, str]) -> dict[str, int]:
 
 
 def reaction_summary(counts: Mapping[str, int]) -> str:
-    """Rend des réactions agrégées : `👍 3  ❤️ 1`.
+    """Renders aggregated reactions: `👍 3  ❤️ 1`.
 
-    Le compte est TOUJOURS affiché, y compris pour 1 : une ligne
-    `👍 3  ❤️` se lit comme si la seconde réaction n'avait personne, alors
-    que `👍 3  ❤️ 1` donne le nombre réel sans avoir à le deviner.
+    The count is ALWAYS displayed, including for 1: a line
+    `👍 3  ❤️` reads as if the second reaction had nobody, whereas
+    `👍 3  ❤️ 1` gives the real number without having to guess.
 
-    Ordre déterministe (tri par count décroissant puis clé) pour que deux
-    rendus successifs ne sautent pas d'une ligne à l'autre. Les clés sont
-    échappées : elles viennent du réseau.
+    Deterministic order (sort by descending count then key) so that two
+    consecutive renders do not jump from line to line. Keys are escaped:
+    they come from the network.
     """
     if not counts:
         return ""
@@ -342,31 +342,31 @@ def format_timeline_blocks(
     *,
     header_for: Callable[[TimelineEntry], str],
 ) -> tuple[list[MessageBlock], TimelineContext]:
-    """Convertit des entrées en blocs de rendu (un par message).
+    """Converts entries into render blocks (one per message).
 
-    Règles de groupage, identiques à `format_timeline_entries` :
-      - premier message d'un contexte neuf → en-tête + ligne(s) du bloc ;
-      - silence > seuil → `gap_before` (le séparateur temporel est rendu par
-        l'appelant) puis en-tête + corps ;
-      - même expéditeur consécutif, sans silence → simple corps indenté
-        (`is_continuation`, aucun en-tête) ;
-      - expéditeur différent → nouvel en-tête.
+    Grouping rules, identical to `format_timeline_entries`:
+      - first message of a fresh context → header + block line(s);
+      - silence > threshold → `gap_before` (the time separator is rendered
+        by the caller) then header + body;
+      - consecutive same sender, no silence → plain indented body
+        (`is_continuation`, no header);
+      - different sender → new header.
 
-    `header_for` est un callable(entry) → markup Rich de l'en-tête (avec
-    l'heure, le nom et sa couleur), fourni par l'appelant car il dépend du
-    thème. L'heure et le nom restent hors de ce module : ici on ne décide que
-    de la STRUCTURE, l'appelant décide du rendu.
+    `header_for` is a callable(entry) → Rich markup of the header (with
+    the time, the name and its color), provided by the caller since it
+    depends on the theme. Time and name stay outside this module: here we
+    only decide the STRUCTURE, the caller decides the rendering.
 
-    Retourne (blocs, contexte_final), le contexte s'appliquant à la suite de
-    la liste pour un rendu incrémental cohérent avec le rendu complet.
+    Returns (blocks, final_context), the context applying to the rest of
+    the list for incremental rendering consistent with full rendering.
     """
     blocks: list[MessageBlock] = []
     indent = _TIMELINE_INDENT
     for e in entries:
         gap = ctx.last_sender is not None and interval_time_gap(ctx.last_time_ms, e.time_ms)
-        # Le séparateur de journée est indépendant du silence : un message
-        #isolé à 23h59 puis un à 00h01 ne sont.distants que de 2 minutes mais
-        # changent de jour, donc le repère de date reste utile.
+        # The day separator is independent of silence: one isolated message
+        # at 23:59 then one at 00:01 are only 2 minutes apart but
+        # change day, so the date marker stays useful.
         day_change = needs_date_separator(ctx.last_day_ms, e.time_ms)
         continuation = ctx.last_sender is not None and not gap and e.sender == ctx.last_sender
         lines: list[str] = []
@@ -397,11 +397,11 @@ def format_timeline_entries(
     *,
     header_for: Callable[[TimelineEntry], str],
 ) -> tuple[list[str], TimelineContext]:
-    """Aplatit les blocs de `format_timeline_blocks` en lignes Rich.
+    """Flattens the blocks of `format_timeline_blocks` into Rich lines.
 
-    Vue de confort (tests, débogage, rendu texte) : un message de plus d'une
-    ligne occupe plusieurs lignes. Le rendu à l'écran, lui, utilise les
-    blocs pour avoir un widget par message.
+    Convenience view (tests, debugging, text rendering): a message of more
+    than one line occupies several lines. On-screen rendering instead uses
+    the blocks to have one widget per message.
     """
     blocks, ctx = format_timeline_blocks(entries, ctx, header_for=header_for)
     out: list[str] = []
@@ -418,12 +418,12 @@ def format_timeline_entries(
 
 
 # ---------------------------------------------------------------------------
-# Aides de rendu (timeline)
+# Render helpers (timeline)
 # ---------------------------------------------------------------------------
 
-# Palette des couleurs de sender : une couleur stable par identifiant,
-# dérivée par hachage, pour que chaque personne garde toujours la sienne.
-# (Pastels lisibles sur fond sombre, dans la famille du thème opencode.)
+# Sender color palette: one stable color per identifier, derived by
+# hashing, so each person always keeps their own.
+# (Readable pastels on a dark background, in the opencode theme family.)
 SENDER_COLORS = [
     "#a2d399", "#ffb4ab", "#ffd8a8", "#9ec3ff", "#c1ffb1",
     "#f0b8e0", "#baccb3", "#ffe58f", "#8cd8c8", "#d0d8ff",
@@ -437,24 +437,24 @@ _URL_RE = re.compile(r"https?://[^\s<>\"']+|www\.[^\s<>\"']+")
 
 
 def _sender_color(sender: str) -> str:
-    # usedforsecurity=False : le hash sert UNIQUEMENT à dériver une couleur
-    # d'affichage stable par expéditeur, il n'a aucun rôle cryptographique.
+    # usedforsecurity=False: the hash serves ONLY to derive a stable display
+    # color per sender, it has no cryptographic role whatsoever.
     digest = hashlib.md5(sender.encode("utf-8"), usedforsecurity=False).hexdigest()
     return SENDER_COLORS[int(digest[:8], 16) % len(SENDER_COLORS)]
 
 
 def _inline_markdown(body: str) -> str:
-    """Convertit le markdown inline le plus courant en markup Rich.
+    """Converts the most common inline markdown to Rich markup.
 
-    Le corps est d'abord échappé (les crochets restent littéraux) puis on
-    réinjecte du markup pour le code, le gras, l'italique et le barré.
+    The body is escaped first (brackets stay literal) then markup is
+    reinjected for code, bold, italic and strikethrough.
     """
     text = escape(body)
     code = themes.accent()
-    # Ordre : le code d'abord (le plus spécifique, délimité par des backticks
-    # peu ambigus), puis le barré, le gras et enfin l'italique — pour éviter
-    # qu'un motif ne se chevauche, chaque passe cible uniquement le texte
-    # restant (délimiteurs `**`, `~~`, `*` non consécutifs).
+    # Order: code first (the most specific, delimited by rarely
+    # ambiguous backticks), then strikethrough, bold and finally italic —
+    # so that patterns do not overlap, each pass targets only the remaining
+    # text (non-consecutive `**`, `~~`, `*` delimiters).
     text = _CODE_SPAN.sub(lambda m: f"[{code}]{m.group(1)}[/{code}]", text)
     text = _STRIKE_SPAN.sub(r"[strike]\1[/strike]", text)
     text = _BOLD_SPAN.sub(r"[bold]\1[/bold]", text)
@@ -463,12 +463,12 @@ def _inline_markdown(body: str) -> str:
 
 
 def highlight_mentions(markup: str, user_id: str) -> str:
-    """Enveloppe les mentions de `user_id` dans un markup accent fort.
+    """Wraps mentions of `user_id` in a strong accent markup.
 
-    À appeler APRÈS `_inline_markdown` : le corps est déjà échappé, les
-    mentions `@localpart` ou `@local:serveur` sont donc repérables telles
-    quelles. On évite les faux positifs : une mention partielle (`@bob2`)
-    ou un identifiant différent (`@bob:autre`) n'est pas touchée.
+    Call AFTER `_inline_markdown`: the body is already escaped, so
+    `@localpart` or `@local:server` mentions are findable as they are.
+    False positives are avoided: a partial mention (`@bob2`) or a different
+    identifier (`@bob:other`) is left untouched.
     """
     if not user_id or "@" not in user_id:
         return markup
@@ -480,8 +480,8 @@ def highlight_mentions(markup: str, user_id: str) -> str:
     def _repl(m: re.Match) -> str:
         return f"[bold][{accent}]{m.group(0)}[/{accent}][/bold]"
 
-    # `localpart` contient déjà le '@' (ex. "@alice") ; on le cherche tel quel,
-    # en excluant les faux positifs `@bob2` / `@bob:autre`.
+    # `localpart` already contains the '@' (e.g. "@alice"); we search for it
+    # as is, excluding the false positives `@bob2` / `@bob:other`.
     pattern = rf"({full})|({bare}(?![:\w]))"
     return re.sub(pattern, _repl, markup)
 
@@ -493,11 +493,11 @@ def _format_time(timestamp_ms: int | None) -> str:
 
 
 def _fuzzy_score(query: str, candidate: str) -> float:
-    """Score de correspondance floue (sous-séquence ordonnée).
+    """Fuzzy match score (ordered subsequence).
 
-    Renvoie un score >= 0 si `query` apparaît en sous-séquence dans
-    `candidate` (insensible à la casse), -1 sinon. Bonus pour les lettres
-    consécutives et un préfixe exact, type fzf.
+    Returns a score >= 0 if `query` appears as a subsequence in
+    `candidate` (case-insensitive), -1 otherwise. Bonus for consecutive
+    letters and an exact prefix, fzf-style.
     """
     q = query.casefold()
     c = candidate.casefold()

@@ -1,15 +1,15 @@
-"""Rendu inline des images dans shelltrix.
+"""Inline image rendering in shelltrix.
 
-Affiche les messages m.image de façon totalement sûre pour Textual : l'image
-est décomposée en demi-blocs Unicode (▀) colorés en vraie couleur (truecolor),
-écrits comme de simples lignes de texte dans le RichLog — aucune séquence
-d'échappement brute sur stdout qui corromprait l'écran plein écran.
+Displays m.image messages in a way totally safe for Textual: the image is
+decomposed into Unicode half-blocks (▀) colored in truecolor, written as plain
+text lines in the RichLog — no raw escape sequence on stdout that would
+corrupt the full-screen display.
 
-Ce rendu fonctionne sur tout terminal supportant la vraie couleur (24 bits),
-ce qui inclut la grande majorité des terminaux modernes.
+This rendering works on any terminal supporting truecolor (24-bit), which
+includes the vast majority of modern terminals.
 
-Fallback : affiche un placeholder [image: nom] si le décodage d'image
-(Pillow) n'est pas disponible.
+Fallback: shows an [image: name] placeholder if image decoding (Pillow) is
+not available.
 """
 
 from __future__ import annotations
@@ -24,14 +24,14 @@ from . import config
 
 _images_dir = config.CONFIG_DIR / "images"
 
-# Plafond par défaut d'un média téléchargé (10 Mo). Surchargeable via la clé
-# `max_image_bytes` de ~/.config/shelltrix/config.json. Au-delà : le
-# téléchargement est refusé (protection contre un homeserver/salon hostile
-# qui remplirait la RAM et le disque du client). L'image ne charge JAMAIS
-# plus de `limit` octets en mémoire.
+# Default cap on a downloaded media file (10 MB). Overridable via the
+# `max_image_bytes` key of ~/.config/shelltrix/config.json. Beyond that:
+# the download is refused (protection against a hostile homeserver/room
+# that would fill the client's RAM and disk). The image NEVER loads more
+# than `limit` bytes in memory.
 DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
-# Taille de lecture par chunk : borne la croissance de la mémoire tampon.
+# Chunked read size: bounds the buffer growth.
 _READ_CHUNK = 64 * 1024
 
 
@@ -45,9 +45,8 @@ def _max_image_bytes() -> int:
 
 
 def _ensure_images_dir() -> Path:
-    """Dossier de cache médias en 0700 : les images (contenus privés de
-    salons éventuellement non chiffrés) ne sont pas lisibles par d'autres
-    comptes locaux."""
+    """Media cache directory at 0700: the images (private room contents,
+    possibly unencrypted) are not readable by other local accounts."""
     _images_dir.mkdir(parents=True, exist_ok=True)
     try:
         _images_dir.chmod(0o700)
@@ -57,31 +56,31 @@ def _ensure_images_dir() -> Path:
 
 
 def download_image(mxc_url: str, access_token: str, homeserver: str) -> Path | None:
-    """Télécharge une image depuis une URL Matrix (mxc://).
+    """Downloads an image from a Matrix URL (mxc://).
 
-    Chemin du fichier téléchargé en cas de succès, None sinon ou si le média
-    dépasse le plafond configuré (max_image_bytes).
+    Path of the downloaded file on success, None otherwise or if the media
+    exceeds the configured cap (max_image_bytes).
     """
     import urllib.request
 
-    # Convertir mxc:// en URL HTTP
+    # Convert mxc:// to an HTTP URL
     if not mxc_url.startswith("mxc://"):
         return None
-    mxc_path = mxc_url[6:]  # Retirer mxc://
+    mxc_path = mxc_url[6:]  # Strip mxc://
     base_url = homeserver.rstrip("/")
     if "://" not in base_url:
         base_url = f"https://{base_url}"
     download_url = f"{base_url}/_matrix/media/r0/download/{mxc_path}"
 
-    # Créer le dossier de cache (0700).
+    # Create the cache directory (0700).
     _ensure_images_dir()
 
-    # Nom de fichier basé sur le hash de l'URL
+    # Filename based on the URL hash
     url_hash = base64.urlsafe_b64encode(mxc_url.encode()).decode()[:24]
     ext = _guess_extension(mxc_path)
     local_path = _images_dir / f"{url_hash}{ext}"
 
-    # Si déjà en cache, retourner
+    # Already cached, return
     if local_path.exists() and local_path.stat().st_size > 0:
         return local_path
 
@@ -90,20 +89,20 @@ def download_image(mxc_url: str, access_token: str, homeserver: str) -> Path | N
     try:
         req = urllib.request.Request(download_url)
         req.add_header("Authorization", f"Bearer {access_token}")
-        # nosec B310 — l'hôte de download_url est TOUJOURS le homeserver de
-        # l'utilisateur (base_url), jamais la valeur de l'image (limitée à
-        # mxc:// et appendée en suffixe de chemin). Pas de file:/ ni schéma
-        # arbitraire atteignable : seul le homeserver configuré est contacté.
+        # nosec B310 — the host of download_url is ALWAYS the user's
+        # homeserver (base_url), never the image value (limited to
+        # mxc:// and appended as a path suffix). No file:/ or arbitrary
+        # scheme reachable: only the configured homeserver is contacted.
         with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310
-            # 1) Plafond annoncé par le serveur (Content-Length).
+            # 1) Cap announced by the server (Content-Length).
             content_length = resp.headers.get("Content-Length")
             if content_length is not None:
                 try:
                     if int(content_length) > limit:
                         return None
                 except ValueError:
-                    pass  # en-tête non numérique : le plafond réel suffira
-            # 2) Plafond effectif : on ne lit jamais plus de `limit` octets.
+                    pass  # non-numeric header: the actual cap will suffice
+            # 2) Effective cap: we never read more than `limit` bytes.
             buf = bytearray()
             while len(buf) <= limit:
                 chunk = resp.read(_READ_CHUNK)
@@ -115,7 +114,7 @@ def download_image(mxc_url: str, access_token: str, homeserver: str) -> Path | N
             data = bytes(buf)
         if not data:
             return None
-        # 3) Écriture atomique en 0600 (jamais un fichier partiel lisible).
+        # 3) Atomic write at 0600 (never a readable partial file).
         fd, raw_tmp = tempfile.mkstemp(
             dir=str(_images_dir), prefix=".img-", suffix=".part"
         )
@@ -136,27 +135,27 @@ def download_image(mxc_url: str, access_token: str, homeserver: str) -> Path | N
 
 
 def _guess_extension(path: str) -> str:
-    """Devine l'extension du fichier depuis le chemin MXC."""
+    """Guesses the file extension from the MXC path."""
     if "/" in path:
         name = path.split("/")[-1]
     else:
         name = path
-    # Extraire l'extension si présente
+    # Extract the extension if present
     if "." in name:
         ext = name.rsplit(".", 1)[-1].lower()
         if ext in ("png", "jpg", "jpeg", "gif", "webp", "bmp"):
             return f".{ext}"
-    return ".png"  # Défaut
+    return ".png"  # Default
 
 
 def render_image_placeholder(filename: str) -> str:
-    """Génère un placeholder simple et lisible quand le rendu inline échoue."""
+    """Builds a simple readable placeholder when inline rendering fails."""
     name = Path(filename).name or "image"
     return f"📷 [dim]Image · {name}[/dim]"
 
 
 def _has_pillow() -> bool:
-    """Vrai si Pillow est disponible pour décoder les images."""
+    """True if Pillow is available to decode images."""
     try:
         import PIL  # noqa: F401
 
@@ -166,20 +165,20 @@ def _has_pillow() -> bool:
 
 
 def _rgb_hex(r: int, g: int, b: int) -> str:
-    """Convertit des composantes RGB en code couleur hexadécimal Rich."""
+    """Converts RGB components to a Rich hexadecimal color code."""
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
 def render_image_textual(image_path: str | Path, max_width_cols: int = 40) -> str | None:
-    """Affiche une image en demi-blocs Unicode colorés (▀), sûr pour Textual.
+    """Displays an image as colored Unicode half-blocks (▀), safe for Textual.
 
-    Chaque cellule terminal affiche 2 rangées d'image : le pixel du haut est
-    la couleur de premier plan, celui du bas la couleur d'arrière-plan, via
-    le caractère demi-bloc supérieur ▀. Le résultat est une simple chaîne de
-    markup Rich, sans séquences d'échappement sur stdout.
+    Each terminal cell shows 2 image rows: the top pixel is the foreground
+    color, the bottom one the background color, via the upper half-block
+    character ▀. The result is a plain Rich markup string, with no escape
+    sequences on stdout.
 
-    Renvoie None si Pillow est absent, le fichier est illisible ou l'image
-    est invalide.
+    Returns None if Pillow is missing, the file is unreadable or the image
+    is invalid.
     """
     if not _has_pillow():
         return None
@@ -216,10 +215,10 @@ def render_image_textual(image_path: str | Path, max_width_cols: int = 40) -> st
 
 
 def render_image(image_path: str | Path, max_width_cols: int = 40) -> str:
-    """Rend une image en texte TrueColor sûr pour Textual.
+    """Renders an image as TrueColor text safe for Textual.
 
-    Retourne toujours une chaîne : le rendu demi-bloc si disponible, sinon
-    un placeholder. Plus aucune sortie binaire sur stdout.
+    Always returns a string: the half-block rendering if available,
+    otherwise a placeholder. No more binary output on stdout.
     """
     textual = render_image_textual(image_path, max_width_cols)
     if textual is not None:
@@ -234,11 +233,11 @@ def format_image_message(
     access_token: str,
     homeserver: str,
 ) -> str:
-    """Formate un message image pour affichage dans RichLog.
+    """Formats an image message for display in RichLog.
 
-    Télécharge l'image en cache ; si le téléchargement réussit, renvoie le
-    marqueur interne (sous forme de chemin local à rendre). Sinon, renvoie
-    un placeholder textuel.
+    Caches the image download; if the download succeeds, returns the
+    internal marker (as a local path to render). Otherwise, returns a
+    textual placeholder.
     """
     local_path = download_image(image_url, access_token, homeserver)
     if local_path is None:
@@ -248,5 +247,5 @@ def format_image_message(
 
 
 def is_image_message(body: str) -> bool:
-    """Vrai si le body contient notre marqueur d'image."""
+    """True if the body contains our image marker."""
     return body.startswith("__SHELLTRIX_IMAGE__:")

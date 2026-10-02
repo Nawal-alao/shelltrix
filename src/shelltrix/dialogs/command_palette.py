@@ -1,7 +1,7 @@
-"""Palette de commandes (ctrl+p) — collage ultra-plat, façon opencode.
+"""Command palette (ctrl+p) — ultra-flat collage, opencode style.
 
-Contient le registre de commandes `COMMANDS`, l'ordre des sections et
-l'écran modal `CommandPalette`. Extrait de `app.py`.
+Holds the `COMMANDS` registry, the section order and the
+`CommandPalette` modal screen. Extracted from `app.py`.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ class CommandEntry(NamedTuple):
     suggested: bool = False
 
 
-# Icônes par catégorie (unicode, pas de NerdFont requis)
+# Icons per category (unicode, no NerdFont required)
 _CATEGORY_ICONS = {
     "Navigation": "⌘",
     "Chat": "✎",
@@ -168,12 +168,12 @@ COMMANDS: list[CommandEntry] = [
 ]
 
 
-# Ordre des sections (en-têtes non sélectionnables) dans la vue groupée.
+# Section order (non-selectable headers) in the grouped view.
 SECTIONS = ("Suggested", "Navigation", "Chat", "Action", "System")
 
 
 class CommandPalette(ModalScreen[None]):
-    """Palette de commandes façon opencode (ctrl+p) : collage ultra-plat."""
+    """opencode-style command palette (ctrl+p): ultra-flat collage."""
 
     BINDINGS = [
         ("escape", "dismiss", "Close"),
@@ -213,11 +213,11 @@ class CommandPalette(ModalScreen[None]):
 
     @staticmethod
     def _markup(entry: CommandEntry, cursor: bool) -> tuple[Text, Text]:
-        """Construit le markup d'une ligne : (titre+desc, raccourci)."""
+        """Builds a row's markup: (title+desc, shortcut)."""
         accent_text = themes.accent_text()
         muted = themes.muted()
 
-        # Titre + description
+        # Title + description
         if cursor:
             title = Text(entry.title, style=f"bold {accent_text}")
         else:
@@ -226,7 +226,7 @@ class CommandPalette(ModalScreen[None]):
             desc = f"  {entry.description}"
             title.append(desc, style=f"{accent_text}" if cursor else muted)
 
-        # Raccourci clavier épuré (sans crochets, aligné à droite)
+        # Clean keyboard shortcut (no brackets, right-aligned)
         right = Text()
         if entry.key:
             if cursor:
@@ -272,7 +272,7 @@ class CommandPalette(ModalScreen[None]):
             ]
             members.sort(key=lambda c: c.title)
             if members:
-                rows.append(section)  # en-tête de section
+                rows.append(section)  # section header
                 rows.extend(members)
         remaining = [c for c in commands if c.category not in SECTIONS]
         rows.extend(sorted(remaining, key=lambda c: (c.category, c.title)))
@@ -311,10 +311,10 @@ class CommandPalette(ModalScreen[None]):
                 pass
 
     async def _populate(self) -> None:
-        # Les frappes rapides lancent des _populate concurrents (Input.Changed
-        # pendant un clear/append). Un verrou les sérialise : _rows et les
-        # enfants de la liste restent cohérents, sinon _move pouvait indexer
-        # hors bornes avec un contenu partiellement remplacé.
+        # Fast typing spawns concurrent _populate calls (Input.Changed during
+        # a clear/append). A lock serialises them: _rows and the list
+        # children stay consistent, otherwise _move could index out of
+        # bounds with partially replaced content.
         async with self._pop_lock:
             q = self._query()
             if q:
@@ -437,20 +437,20 @@ class CommandPalette(ModalScreen[None]):
                     self._switch_account(app, chat)
                 )
             elif cmd_id == "logout":
-                # Changer d'écran à l'intérieur d'un callback awaité bloque
-                # (attente du close du screen courant depuis son propre pump).
-                # On le détache donc dans une tâche indépendante.
+                # Switching screens inside an awaited callback deadlocks
+                # (waiting for the current screen to close from its own
+                # pump). So we detach it into a separate task.
                 asyncio.create_task(chat.logout_and_return_to_login())
 
-        # La fermeture du modal est asynchrone : on diffère l'exécution
-        # pour que le focus se pose sur l'écran de chat après le retrait.
-        # Le callback est de toute façon awaité par la file d'appels du screen.
+        # Closing the modal is asynchronous: we defer execution so the focus
+        # lands on the chat screen once it is removed.
+        # The screen's call queue awaits the callback anyway.
         self.app.call_after_refresh(_go)
 
     async def _switch_account(self, app, chat) -> None:
-        """Revient à l'écran de sélection de compte."""
+        """Returns to the account selection screen."""
         from ..screens.account_picker import AccountPickerScreen
 
-        # Déconnecter le compte actuel
+        # Sign out the current account
         await chat.client.logout()
         await app.switch_screen(AccountPickerScreen())

@@ -6,6 +6,10 @@ All notable changes to shelltrix. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Own messages now display as `You` in the timeline (previously `Vous`). The
+  whole user-facing surface — UI, installer output, errors — is now English.
+
 ## [1.0.0] - 2026-10-02
 
 ### Added

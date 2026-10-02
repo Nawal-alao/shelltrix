@@ -1,7 +1,7 @@
-"""Restauration du store E2EE au démarrage quand la clé du trousseau manque.
+"""E2EE store restoration at startup when the keyring key is missing.
 
-Modal `StoreUnlockDialog` extrait de `app.py`. Imports différés de
-ChatScreen/LoginScreen tant qu'ils vivent dans app.py (étapes 11 et 12),
+`StoreUnlockDialog` modal extracted from `app.py`. Deferred imports of
+ChatScreen/LoginScreen while they live in app.py (steps 11 and 12),
 cf. NOTES.md.
 """
 
@@ -12,8 +12,8 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
-# ChatScreen/LoginScreen sont extraits dans screens/ (étapes 11-12) ; ils
-# sont importés en haut de module. Le reste des notes : cf. NOTES.md.
+# ChatScreen/LoginScreen are extracted in screens/ (steps 11-12); they are
+# imported at the top of the module. Remaining notes: cf. NOTES.md.
 from ..config import (
     Credentials,
     StoreLockedError,
@@ -26,8 +26,8 @@ from ..screens.login import LoginScreen
 
 
 class StoreUnlockDialog(ModalScreen[None]):
-    """Demande la clé de récupération pour déchiffrer le store E2EE au
-    démarrage, quand la clé du trousseau est absente (restauration)."""
+    """Asks for the recovery key to decrypt the E2EE store at startup,
+    when the keyring key is absent (restoration)."""
 
     BINDINGS = [
         ("escape", "cancel", "Sign out"),
@@ -78,7 +78,7 @@ class StoreUnlockDialog(ModalScreen[None]):
             return
         try:
             decrypt_store(recovery_key=raw)
-            # Store déchiffré : on charge maintenant les clés E2EE locales.
+            # Store decrypted: now load the local E2EE keys.
             self.client.load_local_store()
         except StoreLockedError as exc:
             self._status(str(exc), kind="error")

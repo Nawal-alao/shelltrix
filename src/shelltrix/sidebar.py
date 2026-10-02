@@ -1,12 +1,12 @@
-"""Sidebar droite : panneaux contextuels (Room / Session), style opencode.
+"""Right sidebar: contextual panels (Room / Session), opencode style.
 
-Helpers de synthèse markup pour les deux panneaux latéraux, extraits de
-`app.py`. Fonctions pures sur des objets room nio (aucun état Textual) :
+Markup synthesis helpers for the two side panels, extracted from `app.py`.
+Pure functions over nio room objects (no Textual state):
   _sidebar_sync_parts, _sidebar_member_counts, _sidebar_power_label,
   _sidebar_room_markup, _sidebar_session_markup
-Plus les primitives de décor partagées avec la sidebar gauche (titre de
-section encadré, branches d'arbre) : `box_header`, `branch`, `tree_block`.
-Dépend uniquement de `themes` et de `rich.markup.escape`.
+Plus the decoration primitives shared with the left sidebar (framed
+section title, tree branches): `box_header`, `branch`, `tree_block`.
+Depends on `themes` and `rich.markup.escape` only.
 """
 
 from __future__ import annotations
@@ -19,24 +19,24 @@ from . import themes
 
 _SIDEBAR_TOPIC_CHARS = 40
 
-# Largeur intérieure minimale d'un cadre : plancher de lisibilité, pour
-# qu'un libellé reste centré même dans une sidebar très étroite (au-delà,
-# le cadre s'élargit au lieu de tronquer le texte).
+# Minimum inner width of a frame: readability floor, so that a label stays
+# centered even in a very narrow sidebar (beyond that, the frame widens
+# instead of truncating the text).
 _BOX_MIN_INNER = 4
 
 
 def box_header(title: str, width: int, *, color: str | None = None) -> list[str]:
-    """Titre de section encadré (┌─┐ / │ Titre │ / └─┘) sur `width` colonnes.
+    """Framed section title (┌─┐ / │ Title │ / └─┘) over `width` columns.
 
-    Le libellé est centré dans le cadre ; s'il ne tient pas, le cadre
-    s'élargit plutôt que de tronquer le texte (les sidebars étant étroites
-    en terminal réduit, la largeur demandée n'est qu'un plancher).
+    The label is centered in the frame; if it does not fit, the frame
+    widens rather than truncating the text (sidebars being narrow in a
+    reduced terminal, the requested width is only a floor).
 
-    Les trois lignes font EXACTEMENT `inner + 2` colonnes : `inner` pour
-    l'intérieur, plus les deux coins. D'où `slack = inner - len(text)` —
-    les deux barres verticales du milieu sont déjà les coins, il ne reste
-    donc aucune colonne à leur réserver (sinon le cadre est « en escalier »,
-    la ligne du titre 2 colonnes plus courte que les deux filets).
+    The three lines take EXACTLY `inner + 2` columns: `inner` for the
+    interior, plus the two corners. Hence `slack = inner - len(text)` —
+    the two vertical bars in the middle are already the corners, so there
+    is no column left to reserve for them (otherwise the frame is
+    "staircase", the title line 2 columns shorter than both rules).
     """
     c = color or themes.border()
     inner = max(width - 2, len(title) + 2, _BOX_MIN_INNER)
@@ -52,23 +52,23 @@ def box_header(title: str, width: int, *, color: str | None = None) -> list[str]
 
 
 def branch(last: bool = False) -> str:
-    """Marqueur de branche d'un élément de liste : `├─`, ou `└─` au dernier."""
+    """Branch marker of a list item: `├─`, or `└─` on the last one."""
     c = themes.muted()
     return f"[{c}]{'└─' if last else '├─'}[/{c}]"
 
 
 def tree_block(rows: Sequence[str]) -> list[str]:
-    """Préfixe chaque ligne d'un bloc par sa branche d'arbre.
+    """Prefixes every line of a block with its tree branch.
 
-    La dernière ligne ferme la branche (`└─`) : le bloc se lit alors comme
-    une section encadrée, avec `box_header`, suivie de ses feuilles.
+    The last line closes the branch (`└─`): the block then reads like a
+    framed section, with `box_header`, followed by its leaves.
     """
     last = len(rows) - 1
     return [f"{branch(i == last)} {row}" for i, row in enumerate(rows)]
 
 
 def _sidebar_sync_parts(sync_state: str) -> tuple[str, str]:
-    """(libellé, couleur) de l'état de sync pour le panneau SESSION."""
+    """(label, color) of the sync state for the SESSION panel."""
     if sync_state == "online":
         return "online", themes.success()
     if sync_state == "syncing":
@@ -81,7 +81,7 @@ def _sidebar_sync_parts(sync_state: str) -> tuple[str, str]:
 
 
 def _sidebar_member_counts(room: object) -> tuple[int | None, int | None]:
-    """(joined, invited) depuis le summary nio, sans erreur si absent."""
+    """(joined, invited) from the nio summary, no error if absent."""
     summary = getattr(room, "summary", None)
     joined = getattr(summary, "joined_member_count", None)
     if joined is None:
@@ -97,7 +97,7 @@ def _sidebar_member_counts(room: object) -> tuple[int | None, int | None]:
 
 
 def _sidebar_power_label(room: object, own_user_id: str) -> str | None:
-    """Rôle + niveau de pouvoir de l'utilisateur courant, ou None si inconnu."""
+    """Role + power level of the current user, or None if unknown."""
     power_levels = getattr(room, "power_levels", None)
     if power_levels is None:
         return None
@@ -118,12 +118,12 @@ def _sidebar_room_markup(room: object | None, own_user_id: str, width: int) -> s
     m = themes.muted()
     t = themes.text()
     lines = box_header("ROOM", width)
-    # État vide : on laisse la timeline centrale porter le message
-    # "Pick a room…" (écrit dans on_mount). Le répéter ici en l'absence de
-    # salon doublait l'info sur deux zones à la fois (état mal nettoyé).
-    # À long terme, un widget d'état vide dédié (un "empty state" partagé
-    # par ces deux zones) serait plus propre qu'un message isolé dans la
-    # timeline — à discuter avant tout refactor.
+    # Empty state: we let the central timeline carry the message
+    # "Pick a room…" (written in on_mount). Repeating it here in the absence
+    # of a room duplicated the info across two zones at once (state not
+    # cleaned up). In the long run, a dedicated empty state widget (an
+    # "empty state" shared by these two zones) would be cleaner than an
+    # isolated message in the timeline — to discuss before any refactor.
     if room is None:
         return "\n".join(lines)
     room_id = getattr(room, "room_id", "?")

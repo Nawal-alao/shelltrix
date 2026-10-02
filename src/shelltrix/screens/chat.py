@@ -1,4 +1,4 @@
-"""Écran principal du chat : salons à gauche, timeline + saisie à droite."""
+"""Main chat screen: rooms on the left, timeline + composer on the right."""
 
 from __future__ import annotations
 
@@ -57,9 +57,9 @@ from ..sidebar import (
 from ..widgets import COLLAPSED_LINES, MessageView, _SendButton
 from .login import LoginScreen
 
-# Correspondance état de sync → (libellé, couleur) pour le header. Les
-# couleurs sont des constantes figées (non reliées au thème) ; seule la
-# ligne "online" bascule sur themes.accent() à l'affichage.
+# sync state → (label, color) mapping for the header. The colors are frozen
+# constants (not tied to the theme); only the "online" row switches to
+# themes.accent() at display time.
 SYNC_LABELS = {
     "connecting": ("offline", "#ff6f6f"),
     "syncing": ("syncing…", "#d7a85f"),
@@ -68,18 +68,18 @@ SYNC_LABELS = {
     "reconnecting": ("reconnecting…", "#d7a85f"),
 }
 
-# Sentinelle indiquant que tout l'historique d'un salon a déjà été chargé
-# (peut être vide tant qu'une première page n'a pas été récupérée).
+# Sentinel stating that all of a room's history is already loaded
+# (may be empty until a first page has been fetched).
 _HISTORY_END = object()
 
-# Largeur d'indentation de la timeline (gouttière d'auteur), et largeur de
-# repli servant au calcul des lignes visibles avant le premier layout.
+# Timeline indent width (author gutter), and the fallback width used to
+# compute visible lines before the first layout.
 _TIMELINE_INDENT_COLS = 8
 _FALLBACK_TIMELINE_WIDTH = 80
 
 
 class ChatScreen(Screen):
-    """L'interface principale : salons à gauche, timeline + saisie à droite."""
+    """Main interface: rooms left, timeline + composer right."""
 
     BINDINGS = [
         ("ctrl+r", "focus_rooms", "Rooms"),
@@ -96,68 +96,68 @@ class ChatScreen(Screen):
         self.client = client
         self.active_room_id: str | None = None
         self.unread: dict[str, int] = {}
-        # Cache SQLite local : persiste les messages de timeline par salon,
-        # scopé au compte courant (self.client.client.user_id).
+        # Local SQLite cache: persists timeline messages per room, scoped
+        # to the current account (self.client.client.user_id).
         self._cache = MessageCache(self.client.client.user_id)
-        # Mentions directes non lues par salon (message @nous, non lu) : sert
-        # à afficher un indicateur distinct ('@') dans la liste des salons.
+        # Unread direct mentions per room (message @us, unread): used to show
+        # a distinct indicator ('@') in the room list.
         self.mentions: dict[str, int] = {}
         self.message_log: dict[str, list[TimelineEntry]] = {}
-        # État de groupage de la timeline par salon (dernier expéditeur /
-        # temps pour les séparateurs temporels et les blocs).
+        # Timeline grouping state per room (last sender / time for the time
+        # separators and the blocks).
         self._timeline_ctx: dict[str, TimelineContext] = {}
-        # Index event_id → nom par salon : sert à résoudre le message cité
-        # par une reply (« en réponse à X »). Vide tant qu'un salon n'a pas
-        # été rendu.
+        # event_id → name index per room: used to resolve the message quoted
+        # by a reply ("in reply to X"). Empty until a room has been
+        # rendered.
         self._reply_index: dict[str, dict[str, str]] = {}
-        # Réactions : (room_id, event_id du message) → {sender: emoji}. On
-        # mémorise l'AUTEUR plutôt qu'un compteur, ce qui rend les doublons
-        # structurellement impossibles (la spec n'autorise qu'une réaction par
-        # personne et par message : changer d'emoji remplace l'ancien) et
-        # permet de charger les réactions de l'historique aussi bien que du
-        # live. Volatiles par choix (non persistées) : elles se reconstruisent
-        # en relisant la page d'historique à l'ouverture du salon.
+        # Reactions: (room_id, message event_id) → {sender: emoji}. We store
+        # the AUTHOR rather than a counter, which makes duplicates
+        # structurally impossible (the spec allows only one reaction per
+        # person per message: changing emoji replaces the old one) and lets
+        # history reactions be loaded as well as live ones. Volatile by
+        # choice (not persisted): they are rebuilt by re-reading the history
+        # page when the room is opened.
         self._reactions: dict[tuple[str, str], dict[str, str]] = {}
-        # Dernier event_id reçu par salon : sert à la commande /react.
+        # Last event_id received per room: used by the /react command.
         self.last_event_id: dict[str, str] = {}
-        # Dernière URL aperçue par salon : sert à la commande "ouvrir le lien".
+        # Last URL seen per room: used by the "open the link" command.
         self.last_link: dict[str, str] = {}
-        # Autocomplétion des slash commands (liste floue sous le composer).
+        # Autocompletion of slash commands (fuzzy list under the composer).
         self._suggestions_active = False
         self._suggestion_index = 0
         self._suggestion_commands: list[str] = []
-        # Autocomplétion des mentions @username / #room.
+        # Autocompletion of @username / #room mentions.
         self._mention_active = False
         self._mention_index = 0
-        self._mention_type: str | None = None  # "user" ou "room"
+        self._mention_type: str | None = None  # "user" or "room"
         self._mention_query: str = ""
         self._mention_start: int = 0
-        self._mention_items: list[tuple[str, str]] = []  # (affichage, à insérer)
-        # Jeton de sync observé (sidebar SESSION) : heure (wall) du dernier
-        # changement de next_batch, pour afficher "Refresh Xs ago".
+        self._mention_items: list[tuple[str, str]] = []  # (display, to insert)
+        # Observed sync token (SESSION sidebar): wall time of the last
+        # next_batch change, to display "Refresh Xs ago".
         self._last_nb: str | None = None
         self._nb_time: float | None = None
-        # Timer du statut (sync/clock) — stocké pour nettoyage sur unmount.
+        # Status timer (sync/clock) — stored for cleanup on unmount.
         self._status_timer: Timer | None = None
-        # Indicateurs de typing (server-authoritative : chaque événement
-        # contient la liste COMPLÈTE des utilisateurs en train de taper).
+        # Typing indicators (server-authoritative: every event holds the
+        # COMPLETE list of users currently typing).
         self._typing_users: dict[str, set[str]] = {}
         self._typing_last_seen: dict[str, float] = {}
-        # Historique server (scrollback) : token de pagination par salon vers
-        # des messages PLUS vieux (None = plus rien à charger), et salons en
-        # cours de chargement (pour éviter les requêtes concurrentes).
+        # Server history (scrollback): pagination token per room towards
+        # OLDER messages (None = nothing left to load), and rooms being
+        # loaded (to avoid concurrent requests).
         self._history_token: dict[str, str | None] = {}
         self._loading_history: set[str] = set()
-        # Dernière ligne affichée par salon (indice dans `message_log`) : sert
-        # à savoir s'il faut scroll_end lors d'un re-rendu.
+        # Last displayed line per room (index in `message_log`): used to
+        # know whether to scroll_end on a re-render.
         self._at_bottom: dict[str, bool] = {}
-        # Largeurs de sidebar retenues au dernier resize : les cadres de
-        # titre (┌───┐) sont dessinés en markup, il faut donc connaître la
-        # largeur disponible pour les redessiner à bonne taille.
+        # Sidebar widths kept at the last resize: the title frames (┌───┐)
+        # are drawn in markup, so we must know the available width to
+        # redraw them at the right size.
         self._left_width = 30
         self._right_width = 30
-        # Dernier markup écrit dans le cadre « ROOMS » : évite de
-        # repeindre le widget à chaque tick alors qu'il n'a pas changé.
+        # Last markup written into the "ROOMS" frame: avoids repainting
+        # the widget on every tick when it has not changed.
         self._room_header_markup: str | None = None
 
     def compose(self) -> ComposeResult:
@@ -195,14 +195,14 @@ class ChatScreen(Screen):
         self.client.on_sas_request = self._show_sas_dialog
         self.client.on_send_error = self._on_send_error
         self.client.on_reaction = self._handle_reaction
-        # Branché AVANT start() : le premier sync part en tâche de fond, il
-        # faut donc que le callback soit en place pour ne pas rater la
-        # publication de la liste des salons.
+        # Wired BEFORE start(): the first sync runs as a background task, so
+        # the callback must be in place to not miss the publication of the
+        # room list.
         self.client.on_first_sync = self._on_first_sync
         self._status_timer = self.set_interval(1.0, self._tick_status)
-        self._tick_status()  # "syncing…" pendant le premier sync
-        # start() est instantané (le sync part en fond) : l'écran s'affiche
-        # tout de suite, la liste se peuple dès que la réponse arrive.
+        self._tick_status()  # "syncing…" during the first sync
+        # start() is non-blocking (the sync runs in the background): the
+        # screen shows up right away, the list fills as soon as it arrives.
         self.client.start()
         self._refresh_room_list()
         timeline = self.query_one("#timeline", VerticalScroll)
@@ -213,15 +213,15 @@ class ChatScreen(Screen):
         )
 
     async def _on_first_sync(self) -> None:
-        """Premier sync réussi : la liste des salons est enfin peuplée."""
+        """First sync succeeded: the room list is finally populated."""
         if not self.is_mounted:
             return
         self._refresh_room_list()
         self._refresh_sidebar()
 
     async def on_unmount(self) -> None:
-        """Arrête le timer de statut et ferme le client proprement : la
-        fermeture chiffre le store E2EE au repos (H4)."""
+        """Stops the status timer and closes the client cleanly: closing
+        encrypts the E2EE store at rest (H4)."""
         if self._status_timer is not None:
             self._status_timer.stop()
             self._status_timer = None
@@ -229,12 +229,12 @@ class ChatScreen(Screen):
         await self.client.stop()
 
     def _set_composer_enabled(self, enabled: bool) -> None:
-        """Verrouille/active la saisie selon qu'un salon est ouvert ou non."""
+        """Locks/enables the composer depending on whether a room is open."""
         composer = self.query_one("#composer", Input)
         composer.disabled = not enabled
-        # Espace initial : quand l'input est vide et focusé, le curseur (bloc)
-        # se rend sur cette espace et non pas sur le premier caractère du
-        # placeholder — évite le glitch visuel "Iype a message…".
+        # Leading space: when the input is empty and focused, the cursor
+        # (block) renders on that space and not on the first character of
+        # the placeholder — avoids the "Iype a message…" visual glitch.
         composer.placeholder = " Type a message…" if enabled else "Select a room to chat"
         if not enabled:
             composer.value = ""
@@ -244,8 +244,8 @@ class ChatScreen(Screen):
                 self._hide_mention_suggestions()
         else:
             self._update_suggestions(composer.value)
-        # Premier appareil sans clé de récupération : on invite à la créer pour
-        # pouvoir restaurer la session (clés E2EE) sur une autre machine.
+        # First device without a recovery key: we invite the user to create
+        # one to restore the session (E2EE keys) on another machine.
         if not recovery_has_verifier():
             self.app.notify(
                 "Run /recovery to back up your session recovery key",
@@ -277,7 +277,7 @@ class ChatScreen(Screen):
         self._purge_typing()
 
     def _purge_typing(self) -> None:
-        """Nettoie les typing expirés (filet de sécurité, 5s sans événement)."""
+        """Purges expired typing (safety net, 5s without an event)."""
         now = time.monotonic()
         expired = [
             rid
@@ -291,7 +291,7 @@ class ChatScreen(Screen):
             self._refresh_typing_display()
 
     async def _handle_typing(self, room_id: str, user_ids: list[str]) -> None:
-        """Gère un événement typing (server-authoritative, liste complète)."""
+        """Handles a typing event (server-authoritative, full list)."""
         own_id = self.client.client.user_id
         typing = {uid for uid in user_ids if uid != own_id}
         self._typing_users[room_id] = typing
@@ -300,7 +300,7 @@ class ChatScreen(Screen):
             self._refresh_typing_display()
 
     def _refresh_typing_display(self) -> None:
-        """Met à jour le widget de typing pour la room active."""
+        """Updates the typing widget for the current room."""
         typing = self._typing_users.get(self.active_room_id, set())
         widget = self.query_one("#typing-status", Static)
         if not typing:
@@ -326,13 +326,13 @@ class ChatScreen(Screen):
         widget.styles.display = "block"
 
     def _panel_content_width(self, selector: str, fallback: int) -> int:
-        """Colonnes de texte disponibles dans un panneau de sidebar.
+        """Text columns available in a sidebar panel.
 
-        Les cadres de titre sont dessinés en markup : ils doivent suivre la
-        largeur RÉELLE de la zone de contenu (padding et bordures du
-        panneau déduits par le layout), sinon la bordure droite du cadre
-        déborde sur celle du panneau. Le repli sert avant le premier
-        passage de layout, quand la taille n'est pas encore connue.
+        Title frames are drawn in markup: they must follow the REAL width
+        of the content area (panel padding and borders deducted by the
+        layout), otherwise the frame's right border overflows onto the
+        panel's. The fallback covers the first layout pass, when the size
+        is not yet known.
         """
         try:
             width = self.query_one(selector).content_size.width
@@ -341,18 +341,18 @@ class ChatScreen(Screen):
         return width if width > 4 else fallback
 
     def _redraw_frames(self) -> None:
-        """Redessine les cadres des deux sidebars (après le layout)."""
+        """Redraws both sidebar frames (after layout)."""
         self._refresh_room_header()
         self._refresh_sidebar()
 
     def _refresh_sidebar(self) -> None:
-        """Re-synthetise les deux panneaux contextuels (Room / Session)."""
+        """Re-synthesizes both context panels (Room / Session)."""
         room = None
         if self.active_room_id:
             room = self.client.rooms().get(self.active_room_id)
         own_id = getattr(getattr(self.client, "client", None), "user_id", None) or ""
-        # Les deux cadres partagent la largeur de #sb-room : sans bordure
-        # propre, SESSION a exactement la même place disponible.
+        # Both frames share the width of #sb-room: without its own
+        # border, SESSION has exactly the same space available.
         inner = self._panel_content_width("#sb-room", self._right_width - 2)
         self.query_one("#sb-room", Static).update(
             _sidebar_room_markup(room, own_id, inner)
@@ -371,11 +371,11 @@ class ChatScreen(Screen):
         )
 
     def _refresh_room_header(self) -> None:
-        """Redessine le cadre du titre « ROOMS » à la largeur courante.
+        """Redraws the "ROOMS" title frame at the current width.
 
-        Appelé à chaque tick : les couleurs du cadre sont figées dans le
-        markup, il faut donc le régénérer pour suivre `/theme`. Le cache
-        évite le repeint quand rien n'a changé.
+        Called on every tick: the frame colors are frozen in the markup, so
+        it must be regenerated to follow `/theme`. The cache avoids the
+        repaint when nothing changed.
         """
         inner = self._panel_content_width("#room-list-header", self._left_width - 2)
         markup = "\n".join(box_header("ROOMS", inner))
@@ -389,7 +389,7 @@ class ChatScreen(Screen):
 
     @staticmethod
     def _unread_badge(count: int) -> str:
-        """Libellé du badge de non-lu : '1'…'99', plafonné à '99+'."""
+        """Unread badge label: '1'…'99', capped at '99+'."""
         return "99+" if count > 99 else str(count)
 
     def _refresh_room_list(self) -> None:
@@ -400,7 +400,7 @@ class ChatScreen(Screen):
         ordered = sorted(
             self.client.rooms().items(),
             key=lambda kv: (
-                self.unread.get(kv[0], 0) == 0,  # les salons non-lus d'abord
+                self.unread.get(kv[0], 0) == 0,  # unread rooms first
                 (kv[1].display_name or kv[0]).lower(),
             ),
         )
@@ -423,7 +423,7 @@ class ChatScreen(Screen):
                 badge = Label(self._unread_badge(unread), classes="room-badge")
             else:
                 badge = None
-            # Branche d'arbre : le dernier salon ferme la branche (└─).
+            # Tree branch: the last room closes the branch (└─).
             stem = Label(branch(index == len(ordered) - 1), classes="room-stem")
             if badge is not None:
                 row = Horizontal(stem, name_label, badge, classes="room-row")
@@ -442,9 +442,9 @@ class ChatScreen(Screen):
         self.active_room_id = room_id
         self.unread[room_id] = 0
         self.mentions[room_id] = 0
-        # Si le salon n'a pas encore de contenu en mémoire cette session, on
-        # restaure ce qui a été mis en cache (affichage immédiat, offline-ish).
-        # Le scrollback serveur complètera ensuite les messages les plus récents.
+        # If the room has no in-memory content for this session yet, we
+        # restore what was cached (instant display, offline-ish). The
+        # server scrollback then fills in the most recent messages.
         if room_id not in self.message_log:
             self.message_log[room_id] = self._cache.load_entries(room_id)
         room = self.client.rooms().get(room_id)
@@ -456,18 +456,18 @@ class ChatScreen(Screen):
         self._refresh_typing_display()
         self._set_composer_enabled(True)
         self.query_one("#composer", Input).focus()
-        # Charger un premier lot d'historique serveur pour qu'un salon récent
-        # (ou vide côté client) montre tout de même des messages.
+        # Load a first batch of server history so a recent room (or one
+        # empty on the client side) still shows messages.
         self.call_after_refresh(self._schedule_history_load)
 
     def _render_timeline(self, room_id: str, *, scroll_end: bool = True) -> None:
-        """Re-rend toute la timeline d'un salon depuis ses entrées structurées.
+        """Re-renders a room's whole timeline from its structured entries.
 
-        Repart toujours d'un contexte de groupage neuf : l'historique stocké
-        est groupé de zéro pour un résultat cohérent (des messages ont pu
-        arriver ou du scrollback a pu être inséré en tête). Un widget par
-        message (et non un flux de lignes) : c'est ce qui permet de cibler un
-        message pour le scroll, la réaction ou le reply.
+        Always starts from a fresh grouping context: the stored history is
+        grouped from zero for a coherent result (messages may have arrived
+        or scrollback may have been prepended). One widget per message (not
+        a stream of lines): that is what allows targeting a message for
+        scrolling, a reaction or a reply.
         """
         timeline = self.query_one("#timeline", VerticalScroll)
         entries = self.message_log.get(room_id, [])
@@ -485,7 +485,7 @@ class ChatScreen(Screen):
             timeline.scroll_end(animate=False)
 
     def _prefix_widgets(self, block: MessageBlock) -> list[Widget]:
-        """Séparateurs (date, silence) qui précèdent un bloc, s'il y en a."""
+        """Separators (date, silence) preceding a block, if any."""
         widgets: list[Widget] = []
         if block.date_before:
             widgets.append(Static("", classes="tl-gap"))
@@ -493,9 +493,9 @@ class ChatScreen(Screen):
                 Static(format_date_separator(block.entry.time_ms), classes="tl-sep")
             )
         elif block.gap_before:
-            # Le séparateur de date rend le filet de silence redondant : un
-            # changement de jour implique forcément un silence de plus de
-            # 5 min, on n'affiche donc qu'un seul repère.
+            # The day separator makes the silence line redundant: a day
+            # change necessarily implies a silence of more than 5 min, so
+            # we only show a single marker.
             widgets.append(Static("", classes="tl-gap"))
             widgets.append(Static(self._time_gap_line(block.entry), classes="tl-sep"))
         return widgets
@@ -506,11 +506,11 @@ class ChatScreen(Screen):
         return f"[dim]{ts}{'─' * 36}[/dim]"
 
     def _message_widget(self, room_id: str, block: MessageBlock) -> MessageView:
-        """Construit le widget d'un message (réactions + repli si besoin).
+        """Builds a message's widget (reactions + fallback if needed).
 
-        Le corps est passé tel quel : son indentation de gouttière est appliquée
-        par `MessageView` en Padding, ce qui la conserve sur les lignes de
-        continuation après habillage (indenter la chaîne ne les atteindrait pas).
+        The body is passed as-is: its gutter indent is applied by
+        `MessageView` as Padding, which keeps it on the continuation lines
+        after wrapping (indenting the string would not reach them).
         """
         return MessageView(
             block,
@@ -519,14 +519,14 @@ class ChatScreen(Screen):
         )
 
     def _is_long(self, block: MessageBlock) -> bool:
-        """Un message est replié s'il dépasse le seuil de lignes VISIBLES.
+        """A message is folded when it exceeds the VISIBLE lines threshold.
 
-        On mesure sur les lignes telles qu'elles seront rendues, donc en tenant
-        compte de l'habillage à la largeur du terminal : compter les seuls `\n`
-        ignorerait tous les messages longs sans retour à la ligne — le cas le
-        plus courant dans un chat, et précisément celui qui déborde. Le markup
-        Rich des mentions est retiré du décompte, sinon `@bob` compterait pour
-        ses balises.
+        We measure the lines as they will be rendered, so taking the
+        wrapping at the terminal width into account: counting `\n` alone
+        would ignore every long message without line breaks — the most
+        common case in a chat, and precisely the one that overflows. The
+        Rich markup of mentions is removed from the count, otherwise
+        `@bob` would count for its tags.
         """
         plain = re.sub(r"\[/?[^\[\]]+\]", "", block.entry.body)
         width = max(self.timeline_width - _TIMELINE_INDENT_COLS, 20)
@@ -537,7 +537,7 @@ class ChatScreen(Screen):
 
     @property
     def timeline_width(self) -> int:
-        """Largeur utile de la timeline, avec repli sûr avant layout."""
+        """Usable timeline width, with a safe fallback before layout."""
         try:
             width = self.query_one("#timeline", VerticalScroll).content_size.width
         except NoMatches:
@@ -545,12 +545,12 @@ class ChatScreen(Screen):
         return width if width > 20 else _FALLBACK_TIMELINE_WIDTH
 
     def open_message(self, room_id: str, event_id: str) -> None:
-        """Ouvre un salon et se positionne sur un message précis.
+        """Opens a room and positions on a specific message.
 
-        Utilisé par la recherche : bascule sur le salon, restaure son
-        historique depuis le cache, puis défile jusqu'à l'emplacement de la
-        cible (approximé par son rang dans le log — chaque entrée rend au
-        moins une ligne).
+        Used by message search: switches to the room, restores its
+        history from the cache, then scrolls to the target's position
+        (approximated by its rank in the log — every entry renders at
+        least one line).
         """
         self.active_room_id = room_id
         self.unread[room_id] = 0
@@ -563,9 +563,9 @@ class ChatScreen(Screen):
         self._refresh_room_list()
         self._render_timeline(room_id, scroll_end=False)
         timeline = self.query_one("#timeline", VerticalScroll)
-        # Scroll PRÉCIS sur le message visé : on retrouve le widget par son
-        # event_id. (L'ancien RichLog n'avait qu'un flux de lignes, d'où
-        # l'approximation par rang dans le log.)
+        # PRECISE scroll to the targeted message: we find the widget by
+        # its event_id. (The old RichLog only had a stream of lines, hence
+        # the approximation by rank in the log.)
         target = next(
             (
                 w
@@ -593,7 +593,7 @@ class ChatScreen(Screen):
         timeline.scroll_down(animate=False)
 
     def action_timeline_history(self) -> None:
-        """Remonte la timeline ; en haut, charge des messages plus anciens."""
+        """Scrolls the timeline up; at the top, loads older messages."""
         if not self.active_room_id:
             return
         timeline = self.query_one("#timeline", VerticalScroll)
@@ -608,18 +608,18 @@ class ChatScreen(Screen):
         if not room_id or room_id in self._loading_history:
             return
         if self._history_token.get(room_id) == _HISTORY_END:
-            return  # déjà tout chargé
+            return  # everything already loaded
         self._loading_history.add(room_id)
         self.run_worker(self._load_older_history(room_id), exclusive=True, group="history")
 
     async def _load_older_history(self, room_id: str) -> None:
-        """Récupère des messages plus anciens (scrollback) et les préfixe.
+        """Fetches older messages (scrollback) and prepends them.
 
-        À la première invocation sans token, on prend la page la plus récente
-        (start=None) ; ensuite on remonte page par page vers le passé. Les
-        entrées reçues en doublon (déjà présentes par sync) sont dédupliquées
-        par event_id. Après insertion, on re-rend et on préserve la position
-        de défilement.
+        On the first call without a token, we take the most recent page
+        (start=None); then we go back page by page into the past. Entries
+        received as duplicates (already present from sync) are deduplicated
+        by event_id. After insertion we re-render and preserve the scroll
+        position.
         """
         try:
             if not self.active_room_id or self.active_room_id != room_id:
@@ -633,9 +633,9 @@ class ChatScreen(Screen):
             timeline = self.query_one("#timeline", VerticalScroll)
             prev_scroll = timeline.scroll_y
             events = list(resp.chunk)
-            # Les réactions voyagent dans la même page que les messages : on les
-            # récolte avant de construire les entrées, sinon l'historique
-            # s'afficherait sans aucun compteur.
+            # Reactions travel in the same page as the messages: we
+            # harvest them before building the entries, otherwise the
+            # history would display without any counter.
             self._harvest_reactions(room_id, events)
             entries = self._entries_from_events(room_id, events)
             existing_ids = {e.event_id for e in self.message_log.get(room_id, [])}
@@ -643,7 +643,7 @@ class ChatScreen(Screen):
                 e for e in entries if e.event_id and e.event_id not in existing_ids
             ]
             if not added:
-                # Rien de nouveau : probablement arrivé à la fin de l'historique.
+                # Nothing new: probably reached the end of the history.
                 self._history_token[room_id] = _HISTORY_END
                 return
             current = self.message_log.get(room_id, [])
@@ -666,15 +666,15 @@ class ChatScreen(Screen):
         prev_scroll: int,
         added_ids: set[str],
     ) -> None:
-        """Récompense le scroll après l'insertion d'un historique plus ancien.
+        """Restores the scroll after prepending older history.
 
-        Le contenu pré-existant a glissé vers le bas d'autant de lignes que
-        les nouveaux messages en occupent. On décale donc de la HAUTEUR
-        RÉELLEMENT RENDUE des widgets ajoutés : l'ancienne approximation
-        « + len(added) » supposait une ligne par message, ce qui était faux
-        dès qu'un message en faisait plusieurs (ou qu'un séparateur s'y
-        intercalait). Mesurable seulement après le passage du layout, d'où le
-        `call_after_refresh` de l'appelant.
+        The pre-existing content slid down by as many lines as the new
+        messages occupy. We therefore offset by the ACTUALLY RENDERED
+        HEIGHT of the added widgets: the old approximation "+ len(added)"
+        assumed one line per message, which was wrong as soon as a message
+        took several lines (or when a separator was interleaved). Only
+        measurable after the layout pass, hence the caller's
+        `call_after_refresh`.
         """
         delta = sum(
             w.outer_size.height
@@ -689,11 +689,11 @@ class ChatScreen(Screen):
     def _entries_from_events(
         self, room_id: str, events: list
     ) -> list[TimelineEntry]:
-        """Convertit des événements d'historique nio en TimelineEntry.
+        """Converts nio history events into TimelineEntry.
 
-        Gère les messages texte/emote/notice et les images (placeholder).
-        Retourne les entrées en ordre chronologique croissant (plus vieux
-        d'abord), prêtes à être préfixées.
+        Handles text/emote/notice messages and images (placeholder).
+        Returns the entries in ascending chronological order (oldest
+        first), ready to be prepended.
         """
         own_id = self.client.client.user_id
         me = self.client.client.user_id
@@ -704,9 +704,9 @@ class ChatScreen(Screen):
 
         out: list[TimelineEntry] = []
         for ev in events:
-            # Une annotation `m.reaction` est un `RoomMessageText` au corps vide :
-            # sans ce filtre, chaque réaction de l'historique ajouterait une
-            # ligne BLANCHE dans la timeline.
+            # An `m.reaction` annotation is a `RoomMessageText` with an
+            # empty body: without this filter, every history reaction
+            # would add a BLANK line to the timeline.
             if annotation_of(getattr(ev, "source", {}).get("content", {}))[0]:
                 continue
             try:
@@ -718,7 +718,7 @@ class ChatScreen(Screen):
                         TimelineEntry(
                             sender=ev.sender,
                             display_name=(
-                                "Vous"
+                                "You"
                                 if own
                                 else (self._room_name(room_id, ev.sender))
                             ),
@@ -747,7 +747,7 @@ class ChatScreen(Screen):
                         TimelineEntry(
                             sender=ev.sender,
                             display_name=(
-                                "Vous" if own else (self._room_name(room_id, ev.sender))
+                                "You" if own else (self._room_name(room_id, ev.sender))
                             ),
                             is_own=own,
                             time_ms=raw_ts,
@@ -766,7 +766,7 @@ class ChatScreen(Screen):
         return out
 
     def _room_name(self, room_id: str, sender: str) -> str:
-        """Nom d'affichage d'un expéditeur dans un salon (résolu ou brut)."""
+        """Display name of a sender in a room (resolved or raw)."""
         room = self.client.rooms().get(room_id)
         if room is None:
             return sender
@@ -776,36 +776,36 @@ class ChatScreen(Screen):
             return sender
 
     def _header_for(self, entry: TimelineEntry) -> str:
-        """Markup Rich du header de bloc : heure en gouttière + auteur.
+        """Rich markup of the block header: time in the gutter + author.
 
-        L'heure occupe une colonne fixe à gauche et le nom démarre exactement
-        sur la colonne du corps des messages (8 = 5 pour « HH:MM » + 3 espaces),
-        donc le texte ne se décale pas quand on ajoute l'horodatage. Elle n'est
-        rendue que sur les en-têtes : les messages consécutifs d'un même auteur
-        restent mutés, et l'heure est celle du début du bloc — se répéter à
-        chaque ligne serait le bruit que le groupage est censé supprimer.
+        The time occupies a fixed column on the left and the name starts
+        exactly on the message body column (8 = 5 for "HH:MM" + 3 spaces),
+        so the text does not shift when the timestamp is added. It is only
+        rendered on headers: consecutive messages from the same author
+        stay muted, and the time is the one at the start of the block —
+        repeating it on every line would be the noise grouping removes.
         """
         ts = escape(entry.timestamp) if entry.timestamp else "--:--"
         stamp = f"[dim]{ts}[/dim]   "
         if entry.is_own:
             accent = themes.accent()
-            return f"{stamp}[bold][{accent}]› Vous[/{accent}][/bold]"
+            return f"{stamp}[bold][{accent}]› You[/{accent}][/bold]"
         color = _sender_color(entry.sender)
         name = escape(entry.display_name or entry.sender)
         return f"{stamp}[{color}]‹ {name}[/{color}]"
 
-    # -- Résolution des replies et des réactions ----------------------------
+    # -- Reply and reaction resolution -------------------------------
 
     def _event_names(self, room_id: str) -> dict[str, tuple[str, str]]:
-        """Index `event_id` → (user_id, nom d'affichage) d'un salon.
+        """`event_id` → (user_id, display name) index of a room.
 
-        Sert à deux choses qui ne se déduisent pas l'une de l'autre :
-          - le préfixe de repli `<@user_id>` qu'on pose à l'envoi, qui exige
-            l'IDENTIFIANT et pas le nom d'affichage (c'était le bug : on
-            cherchait « Tim » là où le corps contenait `<@tim:hs> `) ;
-          - l'étiquette « en réponse à X », qui veut le nom lisible.
-        Reconstruit à chaque rendu complet (l'historique préfixé change le
-        contenu), puis incrémentalement à l'ajout.
+        Serves two things that do not derive from one another:
+          - the `<@user_id>` fallback prefix we set on send, which requires
+            the IDENTIFIER and not the display name (that was the bug: we
+            looked for "Tim" where the body contained `<@tim:hs> `);
+          - the "in reply to X" label, which wants the readable name.
+        Rebuilt on every full render (prepended history changes the
+        content), then incrementally on append.
         """
         idx = self._reply_index.get(room_id)
         if idx is None:
@@ -823,12 +823,12 @@ class ChatScreen(Screen):
         )
 
     def on_resize(self, event: events.Resize) -> None:
-        """Largeurs progressives des sidebars selon la largeur du terminal.
+        """Progressive sidebar widths according to the terminal width.
 
-        Grille visée à 1920×1080 (~210 colonnes) : ~30 cellules de chaque
-        côté, le chat prend tout le reste. En dessous, on réduit de paliers
-        pour ne jamais saturer l'écran ; sous 100 colonnes on masque la
-        sidebar droite (toujours remplaçable par le raccourci existant).
+        Grid targeted at 1920×1080 (~210 columns): ~30 cells on each
+        side, the chat takes all the rest. Below that we shrink in steps
+        so the screen is never saturated; under 100 columns we hide the
+        right sidebar (always replaceable by the existing shortcut).
         """
         w = event.size.width
         if w >= 200:
@@ -846,8 +846,8 @@ class ChatScreen(Screen):
             sb = self.query_one("#sidebar")
             sb.styles.width = right
             sb.display = sb.display if w >= 100 else False
-            # Les cadres de titre sont du texte : ils suivent la largeur,
-            # mesurée une fois le layout passé (d'où call_after_refresh).
+            # Title frames are text: they follow the width, measured
+            # once the layout has run (hence call_after_refresh).
             self.call_after_refresh(self._redraw_frames)
         except Exception:
             pass
@@ -858,8 +858,8 @@ class ChatScreen(Screen):
         await self._dispatch_compose(event.input)
 
     async def _dispatch_compose(self, composer: Input) -> None:
-        # Entrée pendant que l'autocomplétion est ouverte : on complète la
-        # commande surlignée au lieu d'exécuter la saisie.
+        # Enter while autocompletion is open: we complete the
+        # highlighted command instead of executing the input.
         if self._suggestions_active:
             self._accept_suggestion()
             return
@@ -876,7 +876,7 @@ class ChatScreen(Screen):
         await self.client.send_message(self.active_room_id, body)
 
     # ------------------------------------------------------------------
-    # Commandes slash
+    # Slash commands
     # ------------------------------------------------------------------
     SLASH_HELP = {
         "/me <text>": "send an action (m.emote, rendered in italic)",
@@ -891,7 +891,7 @@ class ChatScreen(Screen):
         "/theme": "switch theme (OpenCode Zen / Matrix Green)",
         "/help": "show this help",
     }
-    # Commandes canoniques (sans usage) pour la complétion fuzzy.
+    # Canonical commands (without usage) for fuzzy completion.
     SLASH_COMMANDS: list[str] = [usage.split()[0] for usage in SLASH_HELP]
     SLASH_DESC = {
         "/me": "send an action",
@@ -940,10 +940,10 @@ class ChatScreen(Screen):
             if not event_id:
                 self.app.notify("No message received to reply to in this room")
                 return
-            # Reply au DERNIER message reçu, comme /react. On retrouve son
-            # auteur via l'index pour poser le préfixe de repli qu'exige la
-            # spec Matrix (les clients qui n'affichent pas la relation doivent
-            # quand même voir à qui on répond).
+            # Reply to the LAST received message, like /react. We find its
+            # author via the index to set the fallback prefix required by
+            # the Matrix spec (clients that do not render the relation must
+            # still see who we are replying to).
             cited_id, _cited_name = self._event_names(room_id).get(event_id, ("", ""))
             await self.client.send_message(
                 room_id,
@@ -990,7 +990,7 @@ class ChatScreen(Screen):
         )
 
     # ------------------------------------------------------------------
-    # Autocomplétion fuzzy des slash commands
+    # Fuzzy autocompletion of slash commands
     # ------------------------------------------------------------------
     async def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "composer":
@@ -1007,15 +1007,15 @@ class ChatScreen(Screen):
         return [cmd for _, cmd in scored]
 
     def _update_suggestions(self, value: str, cursor: int | None = None) -> None:
-        """Met à jour les suggestions : slash commands ou mentions @/#."""
+        """Updates the suggestions: slash commands or @/# mentions."""
         if cursor is None:
             cursor = len(value)
-        # D'abord vérifier les mentions @/# (priorité sur les slash commands)
+        # First check @/# mentions (priority over slash commands)
         if not value.startswith("/"):
             self._suggestions_active = False
             self._update_mention_suggestions(value, cursor)
             return
-        # Sinon, slash commands
+        # Otherwise, slash commands
         self._mention_active = False
         accent = themes.accent()
         lst = self.query_one("#suggestion-list", ListView)
@@ -1048,14 +1048,14 @@ class ChatScreen(Screen):
             self.query_one("#suggestion-list", ListView).styles.display = "none"
 
     # ------------------------------------------------------------------
-    # Autocomplétion des mentions @username / #room
+    # Autocompletion of the @username / #room mentions
     # ------------------------------------------------------------------
     def _active_room_users(self) -> list[tuple[str, str]]:
-        """Liste des membres du salon actif : [(user_id, display_name)].
+        """List of the current room's members: [(user_id, display_name)].
 
-        On exclut l'utilisateur courant : on n'a jamais besoin de se
-        mentionner soi-même (les mentions @self n'ont pas de sens dans
-        Matrix)."""
+        We exclude the current user: there is never a need to mention
+        yourself (@self mentions make no sense in Matrix, so they are
+        skipped)."""
         if self.active_room_id is None:
             return []
         room = self.client.rooms().get(self.active_room_id)
@@ -1073,7 +1073,7 @@ class ChatScreen(Screen):
         return users
 
     def _all_rooms(self) -> list[tuple[str, str]]:
-        """Liste de tous les salons : [(alias_or_id, nom_affiché)]."""
+        """List of all rooms: [(alias_or_id, display_name)]."""
         rooms: list[tuple[str, str]] = []
         for rid, room in self.client.rooms().items():
             alias = getattr(room, "canonical_alias", None)
@@ -1086,36 +1086,36 @@ class ChatScreen(Screen):
         return rooms
 
     def _find_mention_start(self, value: str, cursor: int) -> tuple[int, str, str] | None:
-        """Détecte si le curseur est dans une mention @ ou #.
+        """Detects whether the cursor is inside an @ or # mention.
 
-        Retourne (position_début, type, query) ou None.
-        type = "user" pour @, "room" pour #.
+        Returns (start_position, type, query) or None.
+        type = "user" for @, "room" for #.
         """
         if not value or cursor == 0:
             return None
-        # Chercher le @ ou # le plus proche avant le curseur
+        # Find the closest @ or # before the cursor
         at_pos = value.rfind("@", 0, cursor)
         hash_pos = value.rfind("#", 0, cursor)
         pos = max(at_pos, hash_pos)
         if pos == -1:
             return None
-        # Vérifier que la mention est en début de mot (début de chaîne ou précédé d'un espace)
+        # Check the mention starts a word (string start or preceded by a space)
         if pos > 0 and value[pos - 1] != " ":
             return None
-        # Extraire la query (sans @ ou #)
+        # Extract the query (without @ or #)
         mention = value[pos:cursor]
         if not mention:
             return None
         prefix = mention[0]
         query = mention[1:]
-        # Ne proposer que si la query ne contient pas d'espace (mention en cours)
+        # Only suggest when the query has no space (mention in progress)
         if " " in query:
             return None
         mtype = "user" if prefix == "@" else "room"
         return (pos, mtype, query)
 
     def _update_mention_suggestions(self, value: str, cursor: int) -> None:
-        """Met à jour la liste des suggestions de mention."""
+        """Updates the mention suggestion list."""
         found = self._find_mention_start(value, cursor)
         if found is None:
             self._hide_mention_suggestions()
@@ -1130,7 +1130,7 @@ class ChatScreen(Screen):
         else:
             candidates = self._all_rooms()
 
-        # Filtrer par fuzzy match
+        # Filter by fuzzy match
         q = query.lower()
         scored: list[tuple[float, str, str]] = []
         for insert, display in candidates:
@@ -1147,7 +1147,7 @@ class ChatScreen(Screen):
         accent = themes.accent()
         lst = self.query_one("#suggestion-list", ListView)
         lst.clear()
-        for display, insert in self._mention_items[:10]:  # max 10 résultats
+        for display, insert in self._mention_items[:10]:  # max 10 results
             prefix = "@" if mtype == "user" else "#"
             item = ListItem(
                 Label(
@@ -1175,8 +1175,8 @@ class ChatScreen(Screen):
         display, insert = self._mention_items[self._mention_index]
         composer = self.query_one("#composer", Input)
         value = composer.value
-        # Remplacer la mention par le choix + espace
-        end = self._mention_start + len(self._mention_query) + 1  # +1 pour @ ou #
+        # Replace the mention with the choice + space
+        end = self._mention_start + len(self._mention_query) + 1  # +1 for @/#
         new_value = value[:self._mention_start] + insert + " " + value[end:]
         composer.value = new_value
         composer.cursor_position = self._mention_start + len(insert) + 1
@@ -1235,17 +1235,17 @@ class ChatScreen(Screen):
             event.stop()
 
     async def _refresh_room_list_async(self) -> None:
-        # Petite latence pour laisser au serveur le temps d'accepter le join
-        # avant le prochain rafraîchissement.
+        # Short delay to give the server time to accept the join before
+        # the next refresh.
         await asyncio.sleep(0.3)
         self._refresh_room_list()
 
     def _append_timeline_entry(self, room_id: str, entry: TimelineEntry) -> None:
-        """Stoque une entrée et la rend incrémentalement si le salon est actif.
+        """Stores an entry, renders it incrementally if the room is active.
 
-        Le groupage (blocs / séparateurs temporels) est calculé au rendu via
-        le contexte persistant du salon : cohérent avec le re-rendu complet
-        à l'ouverture du salon et O(1) amorti en temps réel.
+        The grouping (blocks / time separators) is computed at render time
+        via the room's persistent context: consistent with the full
+        re-render on room open and amortized O(1) in real time.
         """
         self.message_log.setdefault(room_id, []).append(entry)
         self._cache.upsert_entries(room_id, [entry])
@@ -1270,9 +1270,9 @@ class ChatScreen(Screen):
         entry: TimelineEntry,
         body: str,
     ) -> None:
-        """Incrémente le non-lu et notifie le desktop si nécessaire.
+        """Increments the unread count and notifies the desktop if needed.
 
-        Appelé uniquement quand le message arrive dans un salon inactif.
+        Only called when the message arrives in an inactive room.
         """
         self.unread[room.room_id] = self.unread.get(room.room_id, 0) + 1
         if entry.has_mention and not entry.is_own:
@@ -1288,29 +1288,29 @@ class ChatScreen(Screen):
 
     async def _handle_incoming_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
         me = self.client.client.user_id
-        # Une réaction est un `RoomMessageText` au corps vide, et nio la fait
-        # aussi passer par ce callback : sans ce filtre, chaque emoji reçu
-        # ajouterait un message fantôme vide dans la timeline. Elle est traitée
-        # par `_handle_reaction`.
+        # A reaction is a `RoomMessageText` with an empty body, and nio
+        # also routes it through this callback: without this filter, every
+        # received emoji would add an empty ghost message to the timeline.
+        # It is handled by `_handle_reaction`.
         if annotation_of(getattr(event, "source", {}).get("content", {}))[0]:
             return
         own = event.sender == me
         raw = event.body or ""
-        # Reply : on lit la relation pour savoir quel message est cité, et on
-        # retire le préfixe de repli que nous poseurs à l'envoi (sinon notre
-        # propre timeline afficherait l'original collé à la réponse).
+        # Reply: we read the relation to know which message is quoted, and
+        # strip the fallback prefix we set on send (otherwise our own
+        # timeline would show the original glued to the reply).
         reply_to = reply_target_of(getattr(event, "source", {}).get("content", {}))
         cited_id, cited_name = self._event_names(room.room_id).get(reply_to, ("", ""))
         if reply_to:
-            # Le préfixe de repli qu'on pose à l'envoi reprend l'AUTEUR DU
-            # MESSAGE CITÉ : on le retire par son user_id, sinon notre propre
-            # timeline afficherait l'original collé à la réponse.
+            # The fallback prefix we set on send carries the AUTHOR OF THE
+            # QUOTED MESSAGE: we strip it by its user_id, otherwise our
+            # own timeline would show the original glued to the reply.
             raw = strip_reply_fallback(raw, cited_id)
         body = highlight_mentions(_inline_markdown(raw), me)
-        # On mémorise le dernier event_id du salon : la commande /react s'y
-        # réfère pour poser une réaction.
+        # We store the room's last event_id: the /react command refers
+        # to it to set a reaction.
         self.last_event_id[room.room_id] = event.event_id
-        # et la dernière URL aperçue, pour "ouvrir le dernier lien".
+        # and the last URL seen, for "open the last link".
         m = _URL_RE.search(event.body)
         if m:
             self.last_link[room.room_id] = m.group(0)
@@ -1318,7 +1318,7 @@ class ChatScreen(Screen):
         entry = TimelineEntry(
             sender=event.sender,
             display_name=(
-                "Vous" if own else (room.user_name(event.sender) or event.sender)
+                "You" if own else (room.user_name(event.sender) or event.sender)
             ),
             is_own=own,
             time_ms=event.server_timestamp or 0,
@@ -1339,19 +1339,19 @@ class ChatScreen(Screen):
     async def _handle_incoming_image(
         self, room: MatrixRoom, event: "RoomMessageImage"
     ) -> None:
-        """Gère la réception d'une image."""
+        """Handles the reception of an image."""
         from nio import RoomMessageImage
 
         own = event.sender == self.client.client.user_id
         sender_name = (
-            "Vous" if own else (room.user_name(event.sender) or event.sender)
+            "You" if own else (room.user_name(event.sender) or event.sender)
         )
         filename = event.body or "image"
 
-        # Formater le message image
+        # Format the image message
         image_url = getattr(event, "url", "") or getattr(event, "file", {}).get("url", "")
         if not image_url:
-            # Essayer de récupérer l'URL depuis le contenu
+            # Try to fetch the URL from the content
             content = getattr(event, "source", {}).get("content", {})
             image_url = content.get("url", "")
             if not image_url and "file" in content:
@@ -1373,9 +1373,9 @@ class ChatScreen(Screen):
             return
         self._append_timeline_entry(room.room_id, entry)
 
-        # Tenter d'afficher l'image inline si URL disponible ET si on est
-        # dans le salon actif. Rendu toujours sûr pour Textual : aucune
-        # écriture brute sur stdout (ce qui corromprait l'écran plein écran).
+        # Try to display the image inline if the URL is available AND we
+        # are in the current room. Rendering is always Textual-safe: no raw
+        # write to stdout (which would corrupt the full-screen display).
         if image_url:
             result = format_image_message(
                 sender_name,
@@ -1386,7 +1386,7 @@ class ChatScreen(Screen):
             )
             timeline = self.query_one("#timeline", VerticalScroll)
             if is_image_message(result):
-                # Extraire le chemin et afficher
+                # Extract the path and display
                 parts = result.split(":", 2)
                 if len(parts) == 3:
                     local_path = parts[1]
@@ -1398,16 +1398,16 @@ class ChatScreen(Screen):
     async def _handle_reaction(
         self, room: MatrixRoom, target_id: str, key: str, sender: str
     ) -> None:
-        """Enregistre une réaction et rafraîchit le compteur du message visé.
+        """Records a reaction and refreshes the target message counter.
 
-        Réaction ENVOYÉE EN DIRECT (sync). L'historique passe par
-        `_harvest_reactions`, qui construit le même index.
+        Reaction SENT LIVE (sync). History goes through
+        `_harvest_reactions`, which builds the same index.
         """
         me = self.client.client.user_id
         if sender == me:
-            # On ne compte pas notre propre envoi : le serveur le réémet dans le
-            # sync alors qu'on l'a déjà appliqué. Re-Reacter remplace la clé
-            # précédente du même auteur au lieu de s'y ajouter.
+            # We do not count our own send: the server re-emits it in
+            # the sync while we already applied it. Reacting again
+            # replaces the previous key of the same author.
             return
         self._record_reaction(room.room_id, target_id, key, sender)
         if room.room_id != self.active_room_id:
@@ -1420,11 +1420,11 @@ class ChatScreen(Screen):
     def _record_reaction(
         self, room_id: str, target_id: str, key: str, sender: str
     ) -> None:
-        """Mémorise une réaction et rafraîchit son affichage si le salon est vu.
+        """Stores a reaction, refreshes its display if the room is seen.
 
-        Point d'entrée unique pour le live et l'historique : les deux écrivent
-        dans le même index, donc un même `event_id` reçu deux fois ne compte
-        qu'une fois.
+        Single entry point for live and history: both write into the
+        same index, so the same `event_id` received twice only counts
+        once.
         """
         self._reactions.setdefault((room_id, target_id), {})[sender] = key
         if room_id != self.active_room_id:
@@ -1435,12 +1435,12 @@ class ChatScreen(Screen):
                 return
 
     def _harvest_reactions(self, room_id: str, events: list) -> int:
-        """Récupère les réactions contenues dans une page d'historique.
+        """Fetches the reactions contained in a history page.
 
-        `/messages` renvoie la TIMELINE complète : les annotations y sont
-        intercalées entre les messages qu'elles concernent. Sans cette lecture,
-        tout l'historique reactivity était perdu — les compteurs n'apparaissaient
-        qu'après un redémarrage du client. Renvoie le nombre de réactions vues.
+        `/messages` returns the FULL timeline: annotations are interleaved
+        between the messages they concern. Without this read, all history
+        reactivity was lost — counters only appeared after a client
+        restart. Returns the number of reactions seen.
         """
         seen = 0
         for ev in events:
@@ -1453,12 +1453,12 @@ class ChatScreen(Screen):
         return seen
 
     def _default_reaction_target(self, room_id: str) -> str:
-        """Message visé par défaut : le plus récemment AFFICHÉ.
+        """Default target message: the most recently DISPLAYED one.
 
-        `last_event_id` ne suit que les messages reçus en direct ; après un
-        rechargement depuis le cache il est vide et la commande neoramaît
-        aucune cible. Le dernier élément de `message_log` est, lui, toujours
-        le message du bas de la timeline.
+        `last_event_id` only tracks messages received live; after a
+        reload from the cache it is empty and the command would target
+        nothing. The last element of `message_log`, on the other hand, is
+        always the message at the bottom of the timeline.
         """
         entries = self.message_log.get(room_id, [])
         if entries:
@@ -1466,12 +1466,12 @@ class ChatScreen(Screen):
         return self.last_event_id.get(room_id, "")
 
     async def _cmd_refresh_reactions(self, room_id: str, arg: str) -> None:
-        """`/reactions [event_id]` : relit les réactions d'un message.
+        """`/reactions [event_id]`: re-reads a message's reactions.
 
-        L'historique paginé fournit normalement les réactions, mais un message
-        venu du cache (redémarrage, hors ligne) n'en a aucune. Cette commande
-        interroge `/relations` pour le message visé — par défaut le dernier
-        reçu — et met les compteurs à jour.
+        Paginated history normally provides the reactions, but a message
+        coming from the cache (restart, offline) has none. This command
+        queries `/relations` for the target message — by default the last
+        one received — and updates the counters.
         """
         event_id = arg or self._default_reaction_target(room_id)
         if not event_id:
@@ -1482,12 +1482,12 @@ class ChatScreen(Screen):
             return
         try:
             by_sender = await self.client.fetch_reactions(room_id, event_id)
-        except Exception as exc:  # réseau / homeserver old
+        except Exception as exc:  # network / old homeserver
             self.app.notify(f"Could not load reactions: {exc}", severity="error")
             return
         bucket = self._reactions.setdefault((room_id, event_id), {})
-        # `/relations` renvoie l'état COURENT : on remplace, sinon une réaction
-        # retirée depuis le dernier chargement resterait affichée.
+        # `/relations` returns the CURRENT state: we replace, otherwise
+        # a reaction removed since the last load would stay displayed.
         bucket.clear()
         bucket.update(by_sender)
         for view in self.query_one("#timeline", VerticalScroll).query(MessageView):
@@ -1504,8 +1504,8 @@ class ChatScreen(Screen):
     async def _show_invite_dialog(
         self, room_id: str, room: MatrixRoom, inviter: str
     ) -> None:
-        # On ne rejoint JAMAIS un salon automatiquement : une invitation est
-        # signalée et exige une décision humaine explicite.
+        # We NEVER join a room automatically: an invitation is
+        # reported and requires an explicit human decision.
         await self.app.push_screen(InviteDialog(self.client, room_id, room, inviter))
 
     async def _on_send_error(self, room_id: str, message: str) -> None:
@@ -1538,7 +1538,7 @@ class ChatScreen(Screen):
         self.app.notify("Timeline cleared")
 
     def action_search(self) -> None:
-        """Ouvre la recherche locale de messages."""
+        """Opens the local message search."""
         self.app.push_screen(SearchDialog(self))
 
     def action_mark_read(self) -> None:

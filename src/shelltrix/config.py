@@ -1,4 +1,4 @@
-"""Gestion de la configuration et des identifiants persistants de shelltrix."""
+"""Configuration and persistent credential handling for shelltrix."""
 
 from __future__ import annotations
 
@@ -18,36 +18,35 @@ from cryptography.fernet import Fernet, InvalidToken
 CONFIG_DIR = Path.home() / ".config" / "shelltrix"
 CREDENTIALS_FILE = CONFIG_DIR / "credentials.json"
 STORE_DIR = CONFIG_DIR / "store"
-# Vérificateur (scrypt) de la clé de récupération : permet de reconnaître la
-# clé sur une machine neuve, sans stocker la clé elle-même.
+# scrypt verifier for the session recovery key: lets us recognize the key on a
+# fresh machine without storing the key itself.
 RECOVERY_FILE = CONFIG_DIR / "recovery.json"
 
 KEYRING_SERVICE = "shelltrix"
-# Clé du trousseau contenant le token d'accès. Le token est un secret au même
-# titre qu'un mot de passe : on le conserve dans le trousseau système, jamais
-# en clair sur le disque.
-# (nosec B105 : "access_token" est un libellé de compte keyring, pas un secret.)
+# Keyring entry holding the access token. The token is a secret just like a
+# password: we keep it in the system keyring, never in plaintext on disk.
+# (nosec B105: "access_token" is a keyring account label, not a secret.)
 # nosec B105
 _USERNAME_ACCESS_TOKEN = "access_token"  # nosec B105
 
-# Clé du trousseau contenant la clé Fernet qui chiffre le store olm au repos.
+# Keyring entry holding the Fernet key that encrypts the olm store at rest.
 _USERNAME_STORE_KEY = "store_key"
-# Marqueur présent uniquement quand le store est chiffré.
+# Marker present only when the store is encrypted.
 STORE_ENC_MARKER = STORE_DIR / ".shelltrix-encrypted"
-# Repli (0600) si le trousseau système est indisponible : le store reste
-# chiffré au repos, sans jamais laisser de clair silencieux sur le disque.
+# Fallback (file mode 0600) if the system keyring is unavailable: the store
+# still ends up encrypted at rest, never leaving silent plaintext on disk.
 STORE_KEY_FILE = CONFIG_DIR / "store.key"
 
 
 class StoreLockedError(RuntimeError):
-    """Le store local est chiffré mais aucune clé exploitable n'est
-    disponible : l'utilisateur doit fournir sa clé de récupération."""
+    """The local store is encrypted but no usable key is available:
+    the user must provide their session recovery key."""
 
 
 class StoreEncryptionError(RuntimeError):
-    """Le store ne peut PAS être chiffré au repos : ni le trousseau ni le
-    fichier de secours n'acceptent la clé. Remonté fortement pour ne JAMAIS
-    laisser le store en clair sans en informer l'utilisateur."""
+    """The store CANNOT be encrypted at rest: neither the keyring nor the
+    fallback file accepts the key. Raised loudly so the store is NEVER left
+    in plaintext without telling the user."""
 
 
 @dataclass
@@ -58,11 +57,11 @@ class Credentials:
     access_token: str
 
     # ------------------------------------------------------------------
-    # Persistance
+    # Persistence
     # ------------------------------------------------------------------
-    # Les métadonnées (homeserver, user_id, device_id) ne sont pas sensibles et
-    # restent dans credentials.json (chmod 600). Le token d'accès, lui, est un
-    # secret : il vit dans le trousseau système (keyring) plutôt qu'en clair.
+    # The metadata (homeserver, user_id, device_id) is not sensitive and
+    # stays in credentials.json (chmod 600). The access token, on the other
+    # hand, is a secret: it lives in the system keyring, not in plaintext.
 
     def _keyring_username(self) -> str:
         return f"{self.user_id}:{_USERNAME_ACCESS_TOKEN}"
@@ -73,7 +72,7 @@ class Credentials:
             return None
         data = json.loads(CREDENTIALS_FILE.read_text())
 
-        # 1) Token depuis le trousseau système.
+        # 1) Token from the system keyring.
         token: str | None = None
         if data.get("user_id"):
             token = keyring.get_password(
@@ -81,9 +80,9 @@ class Credentials:
                 f"{data['user_id']}:{_USERNAME_ACCESS_TOKEN}",
             )
 
-        # 2) Rétro-compatibilité : les anciennes versions stockaient le token
-        #    en clair dans credentials.json. On s'en sert comme secours et il
-        #    sera migré vers le trousseau au prochain save().
+        # 2) Backward compatibility: older versions stored the token in
+        #    plaintext in credentials.json. We use it as a fallback and it
+        #    will be migrated to the keyring on the next save().
         legacy = data.get("access_token")
         if token is None and legacy:
             token = legacy
@@ -97,7 +96,7 @@ class Credentials:
 
     @classmethod
     def load_for(cls, user_id: str, homeserver: str, device_id: str) -> "Credentials | None":
-        """Charge les creds pour un compte spécifique (multi-compte)."""
+        """Loads the creds for a specific account (multi-account)."""
         token = keyring.get_password(
             KEYRING_SERVICE,
             f"{user_id}:{_USERNAME_ACCESS_TOKEN}",
@@ -111,7 +110,7 @@ class Credentials:
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        # Métadonnées non sensibles.
+        # Non-sensitive metadata.
         CREDENTIALS_FILE.write_text(
             json.dumps(
                 {
@@ -123,7 +122,7 @@ class Credentials:
             )
         )
         CREDENTIALS_FILE.chmod(0o600)
-        # Token dans le trousseau système.
+        # Token in the system keyring.
         keyring.set_password(
             KEYRING_SERVICE,
             self._keyring_username(),
@@ -131,7 +130,7 @@ class Credentials:
         )
 
     def remove(self) -> None:
-        """Efface les identifiants persistants (déconnexion)."""
+        """Erases the persistent credentials (logout)."""
         CREDENTIALS_FILE.unlink(missing_ok=True)
         try:
             keyring.delete_password(KEYRING_SERVICE, self._keyring_username())
@@ -145,11 +144,11 @@ def ensure_store_dir() -> Path:
 
 
 def skip_splash() -> bool:
-    """Vrai si l'application doit démarrer sans l'écran de bienvenue.
+    """True if the app must start without the welcome screen.
 
-    Option lisible dans config.json via la clé `skip_splash` (défaut :
-    désactivé). N'est pas persistée par shelltrix : l'utilisateur la pose
-    manuellement pour un lancement rapide / scripté."""
+    Option read from config.json via the `skip_splash` key (default:
+    disabled). Not persisted by shelltrix: the user sets it manually for a
+    fast / scripted start."""
     try:
         data = json.loads(CONFIG_DIR.joinpath("config.json").read_text())
         return bool(data.get("skip_splash", False))
@@ -157,25 +156,25 @@ def skip_splash() -> bool:
         return False
 
 
-# Marqueur de premier lancement : le splash de bienvenue n'est offert qu'une
-# fois. Fichier dédié (vide) plutôt qu'une clé de config.json, car
-# themes.save_pref() réécrit config.json à l'identique à chaque changement de
-# thème — un marqueur stocké là-dedans serait effacé au premier ctrl+t.
+# First launch marker: the welcome splash is offered only once. Dedicated
+# (empty) file rather than a config.json key, because themes.save_pref()
+# rewrites config.json identically on every theme change — a marker stored
+# there would be wiped on the first ctrl+t.
 FIRST_RUN_FILE = CONFIG_DIR / ".first_run_done"
 
 
 def first_run_done() -> bool:
-    """Vrai si le splash de bienvenue a déjà été offert (premier lancement
-    terminé). Un fichier absent = première utilisation de la machine."""
+    """True if the welcome splash has already been offered (first launch
+    done). A missing file = first use of the machine."""
     return FIRST_RUN_FILE.exists()
 
 
 def mark_first_run_done() -> None:
-    """Marque le splash comme offert (best effort).
+    """Marks the splash as offered (best effort).
 
-    Best effort comme save_pref() : un FS en lecture seule ne doit pas
-    empêcher l'app de tourner — au pire le splash réapparaîtra au prochain
-    lancement."""
+    Best effort like save_pref(): a read-only filesystem must not stop the
+    app from running — at worst the splash shows up again on the next
+    start."""
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         FIRST_RUN_FILE.touch()
@@ -184,31 +183,31 @@ def mark_first_run_done() -> None:
 
 
 def remove_store() -> None:
-    """Supprime le store olm local (déconnexion complète de l'appareil)."""
+    """Deletes the local olm store (full device logout)."""
     shutil.rmtree(STORE_DIR, ignore_errors=True)
     RECOVERY_FILE.unlink(missing_ok=True)
-    # Le fichier de secours de la clé accompagne la purge locale.
+    # The key fallback file goes away with the local purge.
     STORE_KEY_FILE.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
-# Chiffrement au repos du store olm (clés de chiffrement E2EE)
+# At-rest encryption of the olm store (E2EE encryption keys)
 # ---------------------------------------------------------------------------
-# nio conserve les clés de session olm/megolm en clair dans sa base SQLite.
-# On les chiffre donc au repos : decrypt_store() au démarrage (avant le
-# load_store()), encrypt_store() à l'arrêt (après close()). La clé Fernet
-# vit dans le trousseau système. Le marqueur n'est posé (resp. retiré) qu'une
-# fois toutes les écritures terminées.
+# nio keeps the olm/megolm session keys in plaintext in its SQLite database.
+# We therefore encrypt them at rest: decrypt_store() at startup (before
+# load_store()), encrypt_store() at shutdown (after close()). The Fernet key
+# lives in the system keyring. The marker is only set (resp. removed) once
+# every write has finished.
 
 
 def _get_store_key() -> str | None:
-    """Clé Fernet du store : trousseau d'abord, fichier de secours ensuite."""
+    """Store Fernet key: keyring first, fallback file second."""
     try:
         stored = keyring.get_password(KEYRING_SERVICE, _USERNAME_STORE_KEY)
         if stored:
             return stored
     except Exception:
-        pass  # trousseau indisponible : on tente le fichier de secours
+        pass  # keyring unavailable: we try the fallback file
     try:
         return STORE_KEY_FILE.read_text().strip() or None
     except OSError:
@@ -216,10 +215,10 @@ def _get_store_key() -> str | None:
 
 
 def _set_store_key(key: str) -> bool:
-    """Persiste la clé du store : trousseau, sinon fichier de secours 0600.
+    """Persists the store key: keyring, else 0600 fallback file.
 
-    Renvoie False si AUCUN support ne l'accepte (l'appelant doit alors lever
-    StoreEncryptionError plutôt que de laisser le store en clair)."""
+    Returns False if NO storage accepts it (the caller must then raise
+    StoreEncryptionError rather than leave the store in plaintext)."""
     try:
         keyring.set_password(KEYRING_SERVICE, _USERNAME_STORE_KEY, key)
         return True
@@ -237,16 +236,16 @@ def _set_store_key(key: str) -> bool:
 def _store_fernet(
     key: str | None = None, *, create: bool = True
 ) -> Fernet | None:
-    """Clé Fernet du store : clé explicite, trousseau/secours, ou génération.
+    """Store Fernet key: explicit key, keyring/fallback, or generation.
 
-    - `key` fourni (clé de récupération) : on l'utilise telle quelle ;
-    - sinon on lit la clé persistée (trousseau, puis fichier de secours) ;
-    - si absente, on en génère une nouvelle uniquement quand `create`
-      est vrai (chiffrement à l'arrêt, première création).
-    Renvoie None quand aucune clé n'existe et qu'on ne veut pas en créer
-    (restauration : l'UI demandera la clé de récupération).
-    Lève StoreEncryptionError si une clé nouvelle ne peut être persistée :
-    on préfère échouer fort plutôt que de laisser le store en clair."""
+    - `key` given (session recovery key): we use it as is;
+    - otherwise we read the persisted key (keyring, then fallback file);
+    - if absent, we generate a new one only when `create` is true
+      (encryption at shutdown, first creation).
+    Returns None when no key exists and we do not want to create one
+    (restore: the UI will ask for the session recovery key).
+    Raises StoreEncryptionError if a new key cannot be persisted: we
+    prefer failing loudly rather than leaving the store in plaintext."""
     if key is not None:
         return Fernet(key.encode())
     stored = _get_store_key()
@@ -269,7 +268,7 @@ def _enc_store_is_encrypted() -> bool:
 
 
 def _enc_rotate(file: Path, transform) -> None:
-    """Remplace `file` par sa version transformée, de façon atomique."""
+    """Replaces `file` with its transformed version, atomically."""
     with tempfile.NamedTemporaryFile(
         dir=str(STORE_DIR), prefix=".shelltrix-tmp-", delete=False
     ) as tmp:
@@ -283,17 +282,17 @@ def _enc_rotate(file: Path, transform) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Clé de récupération de session
+# Session recovery key
 # ---------------------------------------------------------------------------
-# La clé de récupération est la clé Fernet du store (soit celle du trousseau,
-# soit une nouvelle générée par l'utilisateur). Elle est présentée sous forme
-# base64 URL-safe et peut être resaisie sur une autre machine. On ne persiste
-# qu'un émpreinte scrypt (salt + hash), jamais la clé elle-même.
+# The session recovery key is the store's Fernet key (either the one from
+# the keyring, or a new one generated by the user). It is presented as
+# URL-safe base64 and can be typed again on another machine. We only persist
+# a scrypt digest (salt + hash), never the key itself.
 
 
 def normalize_recovery_key(raw: str) -> str:
-    """Nettoie la saisie : ignore les espaces/sauts de ligne et ré-applique
-    le padding '=' (base64 url-safe sans caractère particulier)."""
+    """Cleans up the input: strips spaces/newlines and re-applies the '='
+    padding (URL-safe base64 without special characters)."""
     s = "".join(raw.split())
     s = s.rstrip("=")
     s += "=" * ((-len(s)) % 4)
@@ -307,8 +306,8 @@ def _recovery_digest(secret: str, salt: bytes) -> bytes:
 
 
 def recovery_save(secret: str) -> None:
-    """Persiste le vérificateur (scrypt) de la clé de récupération pour
-    pouvoir la reconnaître sur une machine neuve."""
+    """Persists the verifier (scrypt) of the session recovery key so we
+    can recognize it on a brand new machine."""
     normalized = normalize_recovery_key(secret)
     salt = os.urandom(16)
     data = {
@@ -325,7 +324,7 @@ def recovery_has_verifier() -> bool:
 
 
 def recovery_verify(secret: str) -> bool:
-    """Vrai si `secret` correspond au vérificateur persisté."""
+    """True if `secret` matches the persisted verifier."""
     try:
         data = json.loads(RECOVERY_FILE.read_text())
         salt = bytes.fromhex(data["salt"])
@@ -340,12 +339,12 @@ def recovery_verify(secret: str) -> bool:
 
 
 def reveal_recovery_secret() -> str:
-    """Renvoie la clé de récupération du store actif (crée la clé du
-    trousseau si elle n'existe pas encore) et en persiste le vérificateur."""
+    """Returns the session recovery key of the active store (creates the
+    keyring key if it does not exist yet) and persists its verifier."""
     key = _get_store_key()
     if key is None:
         new_key = Fernet.generate_key().decode()
-        _set_store_key(new_key)  # best effort : la clé reste manipulable en session
+        _set_store_key(new_key)  # best effort: the key stays usable in session
         key = _get_store_key() or new_key
     secret = normalize_recovery_key(key)
     recovery_save(secret)
@@ -353,22 +352,23 @@ def reveal_recovery_secret() -> str:
 
 
 def regenerate_recovery_secret() -> str:
-    """Génère une nouvelle clé de store et en expose la clé de récupération.
-    L'ancienne clé de récupération devient invalide (le store sera rechiffré
-    avec la nouvelle à l'arrêt)."""
+    """Generates a new store key and exposes its session recovery key.
+    The old recovery key becomes invalid (the store will be re-encrypted
+    with the new one at shutdown)."""
     new_key = Fernet.generate_key().decode()
-    _set_store_key(new_key)  # best effort : la clé reste montrable en session
+    _set_store_key(new_key)  # best effort: the key stays displayable in session
     secret = normalize_recovery_key(new_key)
     recovery_save(secret)
     return secret
 
 
 def decrypt_store(recovery_key: str | None = None) -> None:
-    """Restaure le store en clair s'il était chiffré (appelé avant load_store).
+    """Restores the store to plaintext if it was encrypted (called before
+    load_store).
 
-    Sans clé : on utilise celle du trousseau (lève StoreLockedError si elle
-    est absente). Avec `recovery_key` : on accepte la clé de récupération,
-    on la ré-enregistre dans le trousseau au succès."""
+    Without a key: we use the one from the keyring (raises StoreLockedError
+    if it is missing). With `recovery_key`: we accept the session recovery
+    key and re-save it in the keyring on success."""
     if not _enc_store_is_encrypted():
         return
     if recovery_key is None:
@@ -386,7 +386,7 @@ def decrypt_store(recovery_key: str | None = None) -> None:
             )
         try:
             fernet = _store_fernet(key=key)
-        except ValueError as exc:  # clé mal formée (mauvaise longueur/caractère)
+        except ValueError as exc:  # malformed key (wrong length/character)
             raise StoreLockedError(
                 "Invalid recovery key (bad format). Check the characters."
             ) from exc
@@ -402,19 +402,19 @@ def decrypt_store(recovery_key: str | None = None) -> None:
         raise StoreLockedError(
             "Invalid recovery key (wrong key or corrupted store)."
         ) from exc
-    # Tout est déchiffré : on retire le marqueur en dernier.
+    # Everything is decrypted: we remove the marker last.
     STORE_ENC_MARKER.unlink(missing_ok=True)
     if recovery_key is not None:
-        # La clé fonctionne : on la ré-enregistre pour les prochains lancements.
+        # The key works: we re-save it for the next runs.
         _set_store_key(key)
 
 
 def encrypt_store() -> None:
-    """Chiffre le store (appelé après close(), à l'arrêt). Clés E2EE protégées au repos.
+    """Encrypts the store (called after close(), at shutdown).
 
-    Ne pose le marqueur qu'après TOUTES les écritures. Lève
-    StoreEncryptionError si aucune clé ne peut être persistée — mieux vaut
-    échouer fort que laisser le store en clair sans que l'utilisateur le sache."""
+    E2EE keys protected at rest. Only sets the marker after ALL writes.
+    Raises StoreEncryptionError if no key can be persisted — better to fail
+    loudly than leave the store in plaintext without the user knowing."""
     if not STORE_DIR.exists():
         return
     fernet = _store_fernet()
@@ -423,5 +423,5 @@ def encrypt_store() -> None:
     ]
     for file in candidates:
         _enc_rotate(file, fernet.encrypt)
-    # Tout est chiffré : on pose le marqueur en dernier.
+    # Everything is encrypted: we set the marker last.
     STORE_ENC_MARKER.touch()

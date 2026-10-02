@@ -1,9 +1,9 @@
-"""Interface Textual de shelltrix.
+"""Textual interface of shelltrix.
 
-Ce module assemble l'application : `ShelltrixApp` (app Textual principale) et
-le point d'entrée `run()`. Les écrans, dialogues et helpers ont été extraits
-en modules à part (screens/, dialogs/, formatting.py, sidebar.py,
-widgets.py) — voir NOTES.md pour le détail du découpage.
+This module assembles the application: `ShelltrixApp` (main Textual app) and
+the entry point `run()`. Screens, dialogs and helpers have been extracted
+into separate modules (screens/, dialogs/, formatting.py, sidebar.py,
+widgets.py) — see NOTES.md for the detail of the split.
 """
 
 from __future__ import annotations
@@ -30,17 +30,17 @@ from .screens.chat import ChatScreen
 from .screens.login import LoginScreen
 from .screens.splash import SplashScreen
 
-# Les couleurs markup (ACCENT/DANGER) suivent le thème actif : elles sont
-# re-évaluées à chaque bascule de thème par _apply_theme_globals().
-# Après le découpage en modules, les consommateurs lisent themes.accent()
-# et themes.danger() directement (cf. NOTES.md). Les globals restent ici
-# maintenues par ShelltrixApp mais n'ont plus d'utilisation.
+# The markup colors (ACCENT/DANGER) follow the active theme: they are
+# re-evaluated on every theme switch by _apply_theme_globals().
+# After the module split, consumers read themes.accent() and
+# themes.danger() directly (cf. NOTES.md). The globals stay here,
+# maintained by ShelltrixApp but no longer used.
 ACCENT = "a2d399"
 DANGER = "ffb4ab"
 
 
 def _apply_theme_globals() -> None:
-    """Repointe les constantes markup (ACCENT/DANGER) sur le thème actif."""
+    """Repoints the markup constants (ACCENT/DANGER) to the active theme."""
     global ACCENT, DANGER
     ACCENT = themes.accent()
     DANGER = themes.danger()
@@ -62,13 +62,13 @@ class ShelltrixApp(App):
 
     def __init__(self) -> None:
         super().__init__()
-        # Les thèmes sont enregistrés AVANT le premier montage : les variables
-        # CSS ($bg, $primary, ...) doivent exister quand app.tcss est compilé.
+        # Themes are registered BEFORE the first mount: the CSS
+        # variables ($bg, $primary, ...) must exist when app.tcss is compiled.
         themes.activate(self)
         _apply_theme_globals()
 
     def cycle_theme(self) -> str:
-        """Bascule au thème suivant et persiste le choix."""
+        """Switches to the next theme and persists the choice."""
         name = themes.cycle(self.theme)
         self.theme = name
         themes.tick(name)
@@ -78,11 +78,11 @@ class ShelltrixApp(App):
         return name
 
     async def on_mount(self) -> None:
-        # Le splash de bienvenue est réservé à la toute première utilisation :
-        # `skip_splash` reste l'opt-out manuel (lancement scripté), le
-        # marqueur de premier lancement fait le reste. On marque *avant* de
-        # pousser l'écran : une fois le splash affiché, il ne revient plus,
-        # même si l'utilisateur quitte l'app pendant l'animation.
+        # The welcome splash is reserved for the very first use:
+        # `skip_splash` stays the manual opt-out (scripted launch), the
+        # first-run marker does the rest. We mark it *before* pushing the
+        # screen: once the splash is displayed, it never comes back, even
+        # if the user quits the app during the animation.
         if skip_splash() or first_run_done():
             await self.begin()
             return
@@ -90,9 +90,9 @@ class ShelltrixApp(App):
         await self.push_screen(SplashScreen())
 
     async def begin(self) -> None:
-        """Après le splash : login ou reprise du chat selon les creds."""
+        """After the splash: login or chat resumption depending on the creds."""
         manager = get_manager()
-        # Si plusieurs comptes sont enregistrés, proposer le sélecteur
+        # If several accounts are stored, offer the picker
         if manager.count() > 1:
             await self.push_screen(AccountPickerScreen())
             return
@@ -105,7 +105,7 @@ class ShelltrixApp(App):
     def action_command_palette(self) -> None:
         self.push_screen(CommandPalette())
 
-    # Les raccourcis natifs de bascule de thème de Textual permutent nos thèmes.
+    # Textual's native theme toggle shortcuts cycle our themes.
     def action_change_theme(self) -> None:
         self.cycle_theme()
 
@@ -125,7 +125,7 @@ class ShelltrixApp(App):
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="shelltrix",
-        description="shelltrix — un client Matrix TUI premium en Python "
+        description="shelltrix — a premium Matrix TUI client, in Python "
         "(matrix-nio + Textual).",
     )
     parser.add_argument(
@@ -139,8 +139,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def run(argv: Sequence[str] | None = None) -> None:
-    # `--version`/`-V`/`--help` sont gérés par argparse (action="version"
-    # imprime et sort, sans lancer l'app Textual).
+    # `--version`/`-V`/`--help` are handled by argparse (action="version"
+    # prints and exits, without launching the Textual app).
     _build_parser().parse_args(argv)
     ShelltrixApp().run()
 

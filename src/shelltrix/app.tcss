@@ -1,14 +1,14 @@
 /* =====================================================================
-   shelltrix — design system "premium flat", style OpenCode Zen
-   Désign tokens fournis par le thème actif (src/shelltrix/themes.py) :
+   shelltrix — "premium flat" design system, OpenCode Zen style
+   Design tokens provided by the active theme (src/shelltrix/themes.py):
    $bg, $pane, $surface, $border, $hover, $text, $muted, $primary,
    $secondary, $accent, $section, $accent_text, $warning, $error,
    $success, $modal_border.
 
-   Règles de l'interface :
-   - grille 4px/8px, pas de gros cadres, séparateurs hairline seulement
-   - trois colonnes continues (sidebar gauche · chat · sidebar droite)
-   - barre haute et pied discrets, toasts plats à expir. automatique
+   UI rules:
+   - 4px/8px grid, no big frames, hairline separators only
+   - three continuous columns (left sidebar · chat · right sidebar)
+   - discreet top bar and footer, flat toasts with automatic expiry
    - "Less UI, more content".
    ===================================================================== */
 
@@ -18,7 +18,7 @@ Screen {
     background: $bg;
 }
 
-/* -- Pied : raccourcis (^R Rooms, ^L Compose, ^P Commands, …) -------- */
+/* -- Footer: shortcuts (^R Rooms, ^L Compose, ^P Commands, …) -------- */
 
 Footer {
     background: $bg;
@@ -40,15 +40,15 @@ Footer .footer-key--description {
 }
 
 /* =====================================================================
-   Boutons — style plat unifié, cohérent avec le composer (_SendButton)
-   Base : sans bordure ni gras, surface au repos / hover au survol.
-   Classes d'intention :
-     Button.-primary → fond $primary, texte $accent_text, gras (action de
-                       confirmation/acceptation).
-     Button.-danger  → fond transparent, texte $error, barre gauche vkey
-                       $error (action destructrice / annulation à risque).
-   Les boutons neutres (Cancel/Close) gardent la classe par défaut, sans
-   classe d'intention : base sobre uniquement.
+   Buttons — unified flat style, consistent with the composer (_SendButton)
+   Base: no border nor bold, surface at rest / hover on hover.
+   Intent classes:
+     Button.-primary → $primary background, $accent_text text, bold
+                       (confirm/accept action).
+     Button.-danger  → transparent background, $error text, left $error
+                       vkey bar (destructive / risky cancel action).
+   Neutral buttons (Cancel/Close) keep the default class, no intent
+   class: sober base only.
    ===================================================================== */
 
 Button {
@@ -90,7 +90,7 @@ Button.-danger:hover {
 }
 
 /* =====================================================================
-   Notifications (toasts) — plats, petite bordure gauche 1px, auto-expire
+   Notifications (toasts) — flat, small 1px left border, auto-expire
    ===================================================================== */
 
 Toast {
@@ -124,7 +124,7 @@ ToastRack {
 }
 
 /* =====================================================================
-   Login — carte de bienvenue centrée
+   Login — centered welcome card
    ===================================================================== */
 
 LoginScreen, AccountPickerScreen {
@@ -203,7 +203,7 @@ LoginScreen, AccountPickerScreen {
 }
 
 /* =====================================================================
-   Sélection de compte (multi-account)
+   Account picker (multi-account)
    ===================================================================== */
 
 #accounts-header {
@@ -244,11 +244,11 @@ LoginScreen, AccountPickerScreen {
 }
 
 /* =====================================================================
-   Chat — barre d'état en haut (discrète : fusionnée au fond, hairline)
+   Chat — discreet status bar on top (blended into the background, hairline)
    ===================================================================== */
 
 #top-bar {
-    height: 2; /* 1 ligne de contenu + 1 ligne de bordure inférieure */
+    height: 2; /* 1 content line + 1 bottom border line */
     background: transparent;
     border-bottom: solid $surface;
     padding: 0 1;
@@ -273,14 +273,14 @@ LoginScreen, AccountPickerScreen {
     color: $muted;
 }
 
-/* -- Layout principal ------------------------------------------------ */
+/* -- Main layout -------------------------------------------------- */
 
 #main {
     height: 1fr;
 }
 
-/* Colonnes continues : les séparateurs sont des hairlines $surface à la
-   jonction des panneaux, jamais de cadre autour d'une zone. */
+/* Continuous columns: the separators are $surface hairlines at the
+   junction of the panels, never a frame around a zone. */
 #room-panel {
     width: 30;
     height: 1fr;
@@ -288,8 +288,8 @@ LoginScreen, AccountPickerScreen {
     border-right: solid $surface;
 }
 
-/* Marque en tête de la sidebar gauche (le "shelltrix" du croquis).
-   hauteur 2 : 1 ligne de texte + 1 ligne de bordure inférieure. */
+/* Brand at the top of the left sidebar (the "shelltrix" of the sketch).
+   height 2: 1 text line + 1 bottom border line. */
 #brand-sidebar {
     height: 2;
     padding: 0 1;
@@ -299,10 +299,10 @@ LoginScreen, AccountPickerScreen {
     border-bottom: solid $surface;
 }
 
-/* Titre de section : cadre ┌─┐ / │ ROOMS │ / └─┐ dessiné en markup
-   (voir sidebar.box_header), d'où une hauteur de 3 lignes. Le contenu
-   reste aligné sur la grille des items (1 col de padding de chaque
-   côté), le cadre arrive donc au bord du panneau. */
+/* Section title: ┌─┐ / │ ROOMS │ / └─┐ frame drawn in markup
+   (see sidebar.box_header), hence a height of 3 lines. The content stays
+   aligned on the item grid (1 col of padding on each side), so the frame
+   reaches the panel edge. */
 #room-list-header {
     height: 3;
     content-align: left middle;
@@ -317,9 +317,9 @@ LoginScreen, AccountPickerScreen {
     padding: 0;
 }
 
-/* Chaque room tient une ligne compacte : branche d'arbre (├─) + nom (1fr,
-   tronqué par "…") + badge non-lu calé à droite, sans fond ni gros
-   bloc. */
+/* Each room fits a compact single line: tree branch (├─) + name (1fr,
+   truncated by "…") + unread badge aligned right, no background nor big
+   block. */
 #room-list ListItem {
     height: 1;
     padding: 0 1;
@@ -333,7 +333,7 @@ LoginScreen, AccountPickerScreen {
     height: 1;
 }
 
-/* La branche est une colonne fixe : le nom garde tout le reste. */
+/* The branch is a fixed column: the name keeps everything else. */
 #room-list .room-stem {
     width: auto;
     margin-right: 1;
@@ -362,7 +362,7 @@ LoginScreen, AccountPickerScreen {
     text-wrap: nowrap;
 }
 
-/* Survol/sélection : uniquement une variation de luminosité. */
+/* Hover/selection: only a brightness variation. */
 #room-list ListItem.active {
     background: $hover;
 }
@@ -381,9 +381,9 @@ LoginScreen, AccountPickerScreen {
     color: $text;
 }
 
-/* Colonne centrale : pas de cadre, fond légèrement plus sombre que les
-   panneaux. La gouttière de scrollbar est gérée dans #timeline (le vrai
-   widget scrollable), pas ici : ce Vertical n'est pas scrollable. */
+/* Center column: no frame, background slightly darker than the
+   panels. The scrollbar gutter is handled in #timeline (the real
+   scrollable widget), not here: this Vertical is not scrollable. */
 #chat-area {
     height: 1fr;
     background: $bg;
@@ -391,11 +391,11 @@ LoginScreen, AccountPickerScreen {
     border-right: none;
 }
 
-/* Le texte de la timeline est aligné sur la grille du composer :
-   colonne 1 du panneau = prompt ">" (1 col) + espace (1 col) = col 3.
-   Le conteneur est scrollable : sa gouttière de scrollbar (bande noire)
-   doit être masquée — scrollbar-size 0 n'empêche pas le scroll (clavier,
-   molette), il cache seulement la barre visuelle. */
+/* The timeline text is aligned on the composer grid:
+   panel column 1 = prompt ">" (1 col) + space (1 col) = col 3.
+   The container is scrollable: its scrollbar gutter (black band)
+   must be hidden — scrollbar-size 0 does not prevent scrolling (keyboard,
+   wheel), it only hides the visual bar. */
 #timeline {
     height: 1fr;
     padding: 1 3 0 3;
@@ -404,16 +404,16 @@ LoginScreen, AccountPickerScreen {
     scrollbar-size: 0 0;
 }
 
-/* Un message = un widget. Le survol le signale sans le colorer : la
-   conversation reste le contenu, la cible n'est qu'un repère de souris.
-   (Les styles de repli / réactions / « voir plus » vivent dans le
-   DEFAULT_CSS de MessageView, avec le widget.) */
+/* One message = one widget. Hover flags it without coloring: the
+   conversation stays the content, the target is only a mouse cue.
+   (The folding / reactions / "see more" styles live in the
+   DEFAULT_CSS of MessageView, with the widget.) */
 #timeline > .timeline-message:hover {
     background: $surface;
 }
 
-/* Séparateurs (changement de jour, silence) : une ligne vide puis le filet,
-   comme les séparateurs de la sidebar. */
+/* Separators (day change, silence): an empty line then the rule,
+   like the sidebar separators. */
 #timeline > .tl-gap {
     height: 1;
 }
@@ -421,14 +421,14 @@ LoginScreen, AccountPickerScreen {
     height: 1;
 }
 
-/* -- Splash screen (bannière SHELLTRIX au lancement) ------------------------ */
-/* Composition : LOGO → tagline → hint clavier, hiérarchie stricte, large
-   espace négatif. #splash-wrap occupe tout l'écran : le groupe
-   (#splash-group, 1fr) reste parfaitement centré sur l'écran pendant que
-   #splash-detail est plié en bas-gauche — aucun décantage du logo. Le
-   groupe est remonté au-dessus du centre (asymétrie) via la marge basse
-   du hint. Une respiration légère sépare les textes (le logo du hint), à
-   l'image de la palette de commandes. */
+/* -- Splash screen (SHELLTRIX banner on launch) --------------------- */
+/* Composition: LOGO → tagline → keyboard hint, strict hierarchy, wide
+   negative space. #splash-wrap takes the whole screen: the group
+   (#splash-group, 1fr) stays perfectly centered on screen while
+   #splash-detail is folded bottom-left — no settling of the logo. The
+   group is moved above center (asymmetry) via the bottom margin
+   of the hint. A light breathing space separates the texts (logo from
+   hint), like in the command palette. */
 
 SplashScreen {
     background: $bg;
@@ -467,8 +467,8 @@ SplashScreen {
     margin-bottom: 2;
 }
 
-/* Micro-détails techniques discrets, pliés en bas-gauche (hors du flux
-   centré : jamais en concurrence visuelle avec le logo). */
+/* Discreet micro technical details, folded bottom-left (outside the
+   centered flow: never in visual competition with the logo). */
 #splash-detail,
 #splash-version {
     width: auto;
@@ -482,9 +482,9 @@ SplashScreen {
     margin-top: 1;
 }
 
-/* Petits terminaux (pas de media queries en CSS Textual) : le SplashScreen
-   bascule ces classes en Python selon la hauteur. 'splash-squeeze' resserre
-   les marges (14-15 lignes), 'splash-tiny' masque le hint (< 14 lignes). */
+/* Small terminals (no CSS media queries in Textual): the SplashScreen toggles
+   these classes from Python by height. 'splash-squeeze' tightens the margins
+   (14-15 lines), 'splash-tiny' hides the hint (< 14 lines). */
 .-splash-squeeze #splash-sub, .-splash-tiny #splash-sub {
     margin-top: 1;
 }
@@ -498,13 +498,13 @@ SplashScreen {
     display: none;
 }
 
-/* Sous ~66 colonnes le bloc ASCII fixe (66 col de large) serait coupé à
-   droite : on masque le logo plutôt que de casser les lettres. */
+/* Under ~66 columns the fixed ASCII block (66 cols wide) would be cut
+   on the right: we hide the logo rather than breaking the letters. */
 .-splash-no-logo #splash-art {
     display: none;
 }
 
-/* -- Sidebar droite (panneaux contextuels Room / Session) -------------- */
+/* -- Right sidebar (contextual Room / Session panels) --------------- */
 
 #sidebar {
     width: 30;
@@ -515,10 +515,10 @@ SplashScreen {
     color: $text;
 }
 
-/* Panneaux ROOM / SESSION : lignes « ├─ … » (voir sidebar.tree_block).
-   Chaque valeur tient sur une seule ligne du panneau — trop longue, elle
-   est tronquée avec « … » plutôt que repliée, sinon sa suite se
-   retrouverait sous la branche, sans repère de rattachement. */
+/* ROOM / SESSION panels: "├─ …" lines (see sidebar.tree_block). Each
+   value fits on a single panel line — too long, it is truncated with "…"
+   rather than folded, otherwise its continuation would end up under the
+   branch, with no cue of attachment. */
 #sidebar > Static {
     width: 100%;
     height: auto;
@@ -529,16 +529,16 @@ SplashScreen {
     overflow: hidden;
 }
 
-/* SESSION est suivi d'un simple interligne (padding-top) : son cadre
-   ┌───┐ joue déjà le rôle de séparateur entre les deux panneaux. */
+/* SESSION is followed by a simple blank line (padding-top): its frame
+   ┌───┐ already plays the role of separator between the two panels. */
 #sb-session {
     padding-top: 1;
 }
 
-/* -- Barre de saisie ------------------------------------------------- */
+/* -- Input bar ----------------------------------------------------- */
 
-/* Dockée en bas de la colonne chat : sans boîte, bordure supérieure
-   ultra-sombre (#141414), curseur/accent vert, bouton "→" discret. */
+/* Docked at the bottom of the chat column: no box, ultra-dark top
+   border (#141414), green cursor/accent, discreet "→" button. */
 #input-bar {
     dock: bottom;
     height: 2;
@@ -547,8 +547,8 @@ SplashScreen {
     padding: 0 1;
 }
 
-/* Prompt ">" dans le flux (pas docké) : 1 cellule + 1 d'espace, puis le
-   composer commence sur la même grille que le texte de la timeline. */
+/* ">" prompt in the flow (not docked): 1 cell + 1 space, then the
+   composer starts on the same grid as the timeline text. */
 #input-prompt {
     width: auto;
     padding: 0 1 0 0;
@@ -567,7 +567,7 @@ SplashScreen {
     padding: 0 4 0 0;
 }
 
-/* Saisie verrouillée tant qu'aucun salon n'est ouvert : moins visible. */
+/* Input locked until a room is opened: less visible. */
 #composer:disabled {
     opacity: 60%;
 }
@@ -577,8 +577,8 @@ SplashScreen {
     border: none;
 }
 
-/* Curseur en couleur d'accent (vert sur matrix_green, orange sur
-   opencode) ; placeholder en texte secondaire. */
+/* Cursor in the accent color (green on matrix_green, orange on
+   opencode); placeholder in secondary text. */
 #composer .input--cursor {
     background: $accent;
     color: $accent_text;
@@ -589,7 +589,7 @@ SplashScreen {
     color: $muted;
 }
 
-/* Bouton d'envoi : Statique cliquable, plat, muet, révélé au survol. */
+/* Send button: clickable Static, flat, muted, revealed on hover. */
 #composer-send {
     dock: right;
     width: 3;
@@ -608,8 +608,8 @@ SplashScreen {
     color: $accent;
 }
 
-/* Autocomplétion des slash commands (recherche floue) : barre fine
-   au-dessus du composer, texte aligné sur la même grille. */
+/* Slash command autocompletion (fuzzy search): thin bar
+   above the composer, text aligned on the same grid. */
 #suggestion-list {
     display: none;
     height: auto;
@@ -636,7 +636,7 @@ SplashScreen {
     color: $text;
 }
 
-/* Indicateur de typing — discret, au-dessus du composer */
+/* Typing indicator — discreet, above the composer */
 #typing-status {
     display: none;
     height: 1;
@@ -646,8 +646,8 @@ SplashScreen {
 }
 
 /* =====================================================================
-   Palette de commandes (style opencode : dialogue centré "Commands")
-   Premium flat : minimaliste, lisible, bien structuré.
+   Command palette (opencode style: centered "Commands" dialog)
+   Premium flat: minimalist, readable, well structured.
    ===================================================================== */
 
 ModalScreen {
@@ -671,7 +671,7 @@ SearchDialog {
     padding: 1 0;
 }
 
-/* -- En-tête (Commands / esc) --------------------------------------- */
+/* -- Header (Commands / esc) --------------------------------------- */
 
 #cp-header {
     height: 1;
@@ -690,7 +690,7 @@ SearchDialog {
     color: $muted;
 }
 
-/* -- Recherche ------------------------------------------------------ */
+/* -- Search ------------------------------------------------------- */
 
 #cp-input {
     background: transparent;
@@ -715,7 +715,7 @@ SearchDialog {
     color: $accent_text;
 }
 
-/* -- Liste ---------------------------------------------------------- */
+/* -- List ---------------------------------------------------------- */
 
 #cp-list {
     background: transparent;
@@ -740,13 +740,13 @@ SearchDialog {
     align: left middle;
 }
 
-/* Titre + description */
+/* Title + description */
 .cp-row-title {
     width: 1fr;
     background: transparent;
 }
 
-/* Raccourci clavier */
+/* Keyboard shortcut */
 .cp-row-right {
     dock: right;
     width: auto;
@@ -754,7 +754,7 @@ SearchDialog {
     color: $muted;
 }
 
-/* -- Headers de sections -------------------------------------------- */
+/* -- Section headers -------------------------------------------- */
 
 .cp-section {
     padding: 0;
@@ -776,7 +776,7 @@ SearchDialog {
     padding: 0 2;
 }
 
-/* -- Sélection & Surbrillance --------------------------------------- */
+/* -- Selection & Highlight --------------------------------------- */
 
 #cp-list ListItem.-highlight,
 #cp-list:focus > ListItem.-highlight,
@@ -794,7 +794,7 @@ SearchDialog {
     color: $accent_text;
 }
 
-/* Les headers ne doivent jamais être surlignés */
+/* Headers must never be highlighted */
 #cp-list ListItem.cp-header-item:hover,
 #cp-list ListItem.cp-header-item.-highlight,
 #cp-list:focus > ListItem.cp-header-item.-highlight {
@@ -811,7 +811,7 @@ SearchDialog {
     text-style: italic;
 }
 
-/* -- Modal « Join a room » --------------------------------------------- */
+/* -- Modal "Join a room" --------------------------------------------- */
 
 JoinRoomDialog {
     align: center middle;
@@ -856,7 +856,7 @@ JoinRoomDialog {
 }
 
 /* =====================================================================
-   Vérification d'appareil par emoji (SAS) — confirmation humaine
+   Emoji device verification (SAS) — human confirmation
    ===================================================================== */
 
 SasDialog {
@@ -913,7 +913,7 @@ SasDialog {
 }
 
 /* =====================================================================
-   Confirmation humaine des invitations
+   Human confirmation of invites
    ===================================================================== */
 
 InviteDialog {
@@ -964,7 +964,7 @@ InviteDialog {
 }
 
 /* =====================================================================
-   Clé de récupération de session (E2EE) — gestion et restauration
+   Session recovery key (E2EE) — management and restoration
    ===================================================================== */
 
 RecoveryDialog,

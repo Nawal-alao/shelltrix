@@ -1,7 +1,7 @@
-"""Clé de récupération de session (E2EE) — gestion et restauration.
+"""Session recovery key (E2EE) — handling and restoration.
 
-Modal `RecoveryDialog` extrait de `app.py`. Lit `themes.accent()` pour la
-clé affichée (ex-global ACCENT, cf. NOTES.md) et pilote le store via config.
+`RecoveryDialog` modal extracted from `app.py`. Reads `themes.accent()` for
+the displayed key (former global ACCENT, cf. NOTES.md) and drives the store.
 """
 
 from __future__ import annotations
@@ -24,9 +24,9 @@ if TYPE_CHECKING:
 
 
 class RecoveryDialog(ModalScreen[None]):
-    """Montre (ou régénère) la clé de récupération : elle permet de
-    restaurer la session (clés E2EE locales) quand le trousseau système
-    a perdu la clé du store (changement de machine, trousseau vidé)."""
+    """Shows (or regenerates) the recovery key: it lets you restore the
+    session (local E2EE keys) when the system keyring has lost the store
+    key (new machine, wiped keyring)."""
 
     BINDINGS = [
         ("escape", "dismiss", "Close"),
@@ -62,7 +62,7 @@ class RecoveryDialog(ModalScreen[None]):
             self._regenerate()
 
     def _reset_confirm(self) -> None:
-        """Revient à l'état de repos : bouton "Regenerate", aucune attente."""
+        """Back to idle: "Regenerate" button, no pending wait."""
         self._confirming = False
         button = self.query_one("#rec-regenerate", Button)
         button.label = "Regenerate"
@@ -70,12 +70,12 @@ class RecoveryDialog(ModalScreen[None]):
         self._confirm_timer = None
 
     def _arm_confirm_timeout(self) -> None:
-        """Lance (ou relance) le compte à rebours de confirmation d'un 1er clic.
+        """Starts (or restarts) the 1st-click confirmation countdown.
 
-        Si l'utilisateur ne re-clique pas dans les 3 secondes, on revient à
-        l'état initial : l'ancienne clé n'a jamais été invalidée. Le timer
-        précédent, s'il existe, est d'abord arrêté pour ne pas superposer
-        deux expirations.
+        If the user does not click again within 3 seconds we go back to
+        the initial state: the old key was never invalidated. The
+        previous timer, if any, is stopped first so two expiries never
+        overlap.
         """
         if self._confirm_timer is not None:
             self._confirm_timer.stop()
@@ -96,7 +96,7 @@ class RecoveryDialog(ModalScreen[None]):
     def _reveal(self) -> None:
         try:
             secret = reveal_recovery_secret()
-        except Exception as exc:  # noqa: BLE001 — surface l'erreur à l'écran
+        except Exception as exc:  # noqa: BLE001 — surface the error on screen
             self.app.notify(f"Could not reveal the recovery key: {exc}", severity="error")
             return
         self._set_key(secret, "Write this key down and keep it in a safe place.")
@@ -119,7 +119,7 @@ class RecoveryDialog(ModalScreen[None]):
             return
         try:
             secret = regenerate_recovery_secret()
-        except Exception as exc:  # noqa: BLE001 — surface l'erreur à l'écran
+        except Exception as exc:  # noqa: BLE001 — surface the error on screen
             self.app.notify(f"Could not regenerate the key: {exc}", severity="error")
             self._reset_confirm()
             return

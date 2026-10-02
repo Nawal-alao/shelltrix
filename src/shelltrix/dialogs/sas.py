@@ -1,7 +1,7 @@
-"""Vérification d'appareil par emoji (SAS) — confirmation humaine requise.
+"""Device verification by emoji (SAS) — a human decision is required.
 
-Modal `SasDialog` extrait de `app.py`. Lit `themes.accent()` pour l'id
-d'appareil (ex-global ACCENT, cf. NOTES.md).
+`SasDialog` modal extracted from `app.py`. Reads `themes.accent()` for the
+device id (former global ACCENT, cf. NOTES.md).
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
-"""Confirmation humaine des invitations — décision explicite avant de
-rejoindre un salon.
+"""Human confirmation for invites — an explicit decision before
+joining a room.
 
-Modal `InviteDialog` extrait de `app.py`. `themes.accent()` remplace
-l'ex-global ACCENT (cf. NOTES.md).
+`InviteDialog` modal extracted from `app.py`. `themes.accent()` replaces
+the former global ACCENT (cf. NOTES.md).
 """
 
 from __future__ import annotations
@@ -69,6 +69,6 @@ class InviteDialog(ModalScreen[None]):
         else:  # invite-decline
             await self.client.decline_invite(self.room_id)
             self.app.notify("Invitation declined")
-        # L'écran de chat actualise sa liste au prochain sync (le salon rejoint
-        # ou refusé apparaîtra / disparaîtra alors).
+        # The chat screen refreshes its list on the next sync (the joined
+        # or declined room will appear / disappear then).
         await self._finish()

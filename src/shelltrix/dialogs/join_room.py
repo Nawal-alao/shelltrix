@@ -1,8 +1,8 @@
-"""Rejoindre un salon par alias — saisie d'un #alias:serveur.
+"""Join a room by alias — entry of an #alias:server.
 
-Modal `JoinRoomDialog` extrait de `app.py`. N'utilise l'écran de chat que
-par instance (`self.chat`) : la classe n'est donc importée que sous
-TYPE_CHECKING.
+`JoinRoomDialog` modal extracted from `app.py`. It only uses the chat
+screen through the instance (`self.chat`), so the class is only imported
+under TYPE_CHECKING.
 """
 
 from __future__ import annotations
