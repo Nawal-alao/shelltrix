@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "shelltrix-core"
+version = "0.1.0"
+description = "Rust core of shelltrix: Matrix transport and E2EE"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+classifiers = [
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Typing :: Typed",
+]
+
+# Optional on purpose: shelltrix runs without this package, on its pure Python
+# core (see SHELLTRIX_CORE in docs/decisions/0001-rust-core.md). Installing it
+# must never be a prerequisite.
+dependencies = []
+
+[tool.maturin]
+features = ["extension-module"]
+module-name = "shelltrix_core"

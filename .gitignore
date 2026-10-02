@@ -11,6 +11,14 @@ dist/
 *.egg
 wheels/
 
+# Rust core (shelltrix-core): compiled artifacts and cargo caches.
+# Cargo.lock is deliberately NOT ignored: it is committed, so a wheel is
+# built from pinned dependency versions and a release is reproducible.
+target/
+*.so
+*.dylib
+*.pyd
+
 # Sensitive / local data (never a token nor a key in plaintext)
 .env
 *.env

@@ -1,0 +1,162 @@
+"""Backend selection for the Matrix core.
+
+The Python core (matrix-nio) stays the default and the only mandatory
+dependency. The Rust core (`shelltrix-core`, a PyO3 extension) is opt-in and
+installed separately: `SHELLTRIX_CORE=rust`.
+
+This module is the seam between the two, and it is deliberately small. It
+holds the *contract* of the first migrated slice — see
+`docs/decisions/0001-rust-core.md` — and nothing else. It is not wired into
+`matrix_client.py` yet, and that is not an oversight: the client consumes
+events through matrix-nio callbacks (`add_event_callback`), while a Rust core
+built on matrix-sdk emits a stream. Bridging the two is a change of
+architecture, not a substitution of a function call, so it will be done as
+one reviewed step rather than half-wired.
+
+Both backends implement `parse_sync_messages` with identical semantics, which
+`tests/test_rust_core.py` verifies on the same payloads. Parity is what makes
+the backend a free choice for the user.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from dataclasses import dataclass
+from typing import Final
+
+log = logging.getLogger(__name__)
+
+_BACKEND_ENV: Final = "SHELLTRIX_CORE"
+_PYTHON: Final = "python"
+_RUST: Final = "rust"
+
+try:  # optional, never a prerequisite
+    import shelltrix_core as _rust
+except ImportError:  # pragma: no cover - depends on the machine
+    _rust = None
+
+
+@dataclass(frozen=True)
+class SyncMessage:
+    """One `m.room.message` of a `/sync` response.
+
+    Mirrors `shelltrix_core.SyncMessage` field for field; the parity test
+    compares them attribute by attribute.
+    """
+
+    sender: str
+    origin_server_ts: int
+    event_id: str
+    msgtype: str
+    body: str
+    mentions: bool
+
+
+def rust_available() -> bool:
+    """Whether the compiled core is importable on this machine."""
+    return _rust is not None
+
+
+def selected_backend() -> str:
+    """The active backend name, `python` or `rust`.
+
+    An unknown value falls back to `python` with a warning: a typo in an
+    environment variable must not cost the user their client. A missing Rust
+    build falls back too — the core is an implementation detail, never a
+    prerequisite — but loudly, since the user asked for something they cannot
+    get.
+    """
+    choice = os.environ.get(_BACKEND_ENV, _PYTHON).strip().lower()
+    if choice == _PYTHON:
+        return _PYTHON
+    if choice != _RUST:
+        log.warning(
+            "%s=%r is not a valid core backend (expected %r or %r), using %r",
+            _BACKEND_ENV, choice, _PYTHON, _RUST, _PYTHON,
+        )
+        return _PYTHON
+    if _rust is None:
+        log.warning(
+            "%s=%s but the Rust core is not installed (pip install "
+            "shelltrix-core); falling back to %r",
+            _BACKEND_ENV, _RUST, _PYTHON,
+        )
+        return _PYTHON
+    return _RUST
+
+
+def parse_sync_messages(payload: bytes, *, backend: str | None = None) -> list[SyncMessage]:
+    """Extract the `m.room.message` events of the joined rooms of a `/sync`.
+
+    Args:
+        payload: the raw response, as received.
+        backend: force a backend instead of honouring the environment. Used by
+            the parity test; `None` means "whatever the user configured".
+
+    Raises:
+        ValueError: if the payload is not JSON, or carries no `rooms` object.
+            Both backends raise the same type for the same input.
+    """
+    chosen = backend or selected_backend()
+    if chosen == _RUST:
+        if _rust is None:
+            raise ValueError(f"{_RUST} core requested but not installed")
+        return [
+            SyncMessage(
+                sender=m.sender,
+                origin_server_ts=m.origin_server_ts,
+                event_id=m.event_id,
+                msgtype=m.msgtype,
+                body=m.body,
+                mentions=m.mentions,
+            )
+            for m in _rust.parse_sync_messages(payload)
+        ]
+    return _parse_sync_messages_python(payload)
+
+
+def _parse_sync_messages_python(payload: bytes) -> list[SyncMessage]:
+    """The reference implementation, and the one that defines the contract.
+
+    Deliberately plain: no matrix-nio, no cache, no display names. If this and
+    the Rust core agree on every field, the two are interchangeable.
+    """
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid /sync JSON: {exc}") from exc
+
+    rooms = decoded.get("rooms")
+    joined = rooms.get("join") if isinstance(rooms, dict) else None
+    if not isinstance(joined, dict):
+        raise ValueError("no `rooms.join` object in /sync")
+
+    out: list[SyncMessage] = []
+    for room in joined.values():
+        if not isinstance(room, dict):
+            continue
+        timeline = room.get("timeline")
+        events = timeline.get("events") if isinstance(timeline, dict) else None
+        if not isinstance(events, list):
+            continue
+        for event in events:
+            if not isinstance(event, dict) or event.get("type") != "m.room.message":
+                continue
+            content = event.get("content")
+            if not isinstance(content, dict):
+                continue
+            mentions = content.get("m.mentions")
+            user_ids = mentions.get("user_ids") if isinstance(mentions, dict) else None
+            out.append(
+                SyncMessage(
+                    sender=event.get("sender") or "",
+                    origin_server_ts=event.get("origin_server_ts") or 0,
+                    event_id=event.get("event_id") or "",
+                    msgtype=content.get("msgtype") or "m.text",
+                    body=content.get("body") or "",
+                    mentions=isinstance(user_ids, list) and bool(user_ids),
+                )
+            )
+    return out

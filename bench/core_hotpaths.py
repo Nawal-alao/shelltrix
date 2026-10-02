@@ -174,6 +174,36 @@ def bench_sync_ingest(megabytes: float, *, events: int = 10000) -> dict[str, flo
     }
 
 
+def bench_sync_ingest_rust(megabytes: float, *, events: int = 10000) -> dict[str, float] | None:
+    """Same payload, parsed by the Rust core. None if it is not installed.
+
+    Measures the extension directly rather than the facade: the comparison
+    that matters is core against matrix-nio, not dataclass construction.
+    """
+    try:
+        import shelltrix_core
+    except ImportError:
+        return None
+
+    raw, expected_events = _fake_sync(megabytes, events=events)
+
+    started = time.perf_counter()
+    parsed = shelltrix_core.parse_sync_messages(raw)
+    elapsed = time.perf_counter() - started
+
+    if len(parsed) != expected_events:
+        raise AssertionError(f"Rust returned {len(parsed)} messages, expected {expected_events}")
+
+    size_mb = len(raw) / 1e6
+    return {
+        "size_mb": size_mb,
+        "events": len(parsed),
+        "seconds": elapsed,
+        "per_event_us": elapsed / len(parsed) * 1e6,
+        "mb_per_s": size_mb / elapsed,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 3. Timeline redraw
 # ---------------------------------------------------------------------------
@@ -277,9 +307,20 @@ def main() -> None:
           f"({e2ee['events_per_s']:.0f} events/s)\n")
 
     sync = measure(lambda: bench_sync_ingest(args.mb), args.repeats)
-    print(_fmt("2. sync ingestion", sync))
+    print(_fmt("2. sync ingestion (python)", sync))
     print(f"   {sync['size_mb']:.1f} MB / {sync['events']} events in "
-          f"{sync['seconds'] * 1000:.1f} ms ({sync['mb_per_s']:.1f} MB/s)\n")
+          f"{sync['seconds'] * 1000:.1f} ms ({sync['mb_per_s']:.1f} MB/s)")
+
+    rust = bench_sync_ingest_rust(args.mb)
+    rust = measure(lambda: rust, args.repeats) if rust is not None else None
+    if rust is None:
+        print("   (Rust core not installed: pip install ./shelltrix-core)\n")
+    else:
+        print(_fmt("2. sync ingestion (rust)", rust))
+        print(f"   {rust['size_mb']:.1f} MB / {rust['events']} events in "
+              f"{rust['seconds'] * 1000:.1f} ms ({rust['mb_per_s']:.1f} MB/s)")
+        print(f"   -> {sync['seconds'] / rust['seconds']:.1f}x faster than the "
+              f"python path\n")
 
     typical = measure(lambda: bench_sync_ingest(args.mb, events=20), args.repeats)
     print(_fmt("   typical /sync (20 events)", typical))
