@@ -376,8 +376,8 @@ ToastRack {
 
 /* Le texte de la timeline est aligné sur la grille du composer :
    colonne 1 du panneau = prompt ">" (1 col) + espace (1 col) = col 3.
-   RichLog est scrollable : sa gouttière de scrollbar (bande noire) doit
-   être masquée — scrollbar-size 0 n'empêche pas le scroll (clavier,
+   Le conteneur est scrollable : sa gouttière de scrollbar (bande noire)
+   doit être masquée — scrollbar-size 0 n'empêche pas le scroll (clavier,
    molette), il cache seulement la barre visuelle. */
 #timeline {
     height: 1fr;
@@ -385,6 +385,23 @@ ToastRack {
     background: $bg;
     color: $text;
     scrollbar-size: 0 0;
+}
+
+/* Un message = un widget. Le survol le signale sans le colorer : la
+   conversation reste le contenu, la cible n'est qu'un repère de souris.
+   (Les styles de repli / réactions / « voir plus » vivent dans le
+   DEFAULT_CSS de MessageView, avec le widget.) */
+#timeline > .timeline-message:hover {
+    background: $surface;
+}
+
+/* Séparateurs (changement de jour, silence) : une ligne vide puis le filet,
+   comme les séparateurs de la sidebar. */
+#timeline > .tl-gap {
+    height: 1;
+}
+#timeline > .tl-sep {
+    height: 1;
 }
 
 /* -- Splash screen (bannière SHELLTRIX au lancement) ------------------------ */

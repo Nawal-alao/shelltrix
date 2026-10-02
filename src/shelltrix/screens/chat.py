@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import webbrowser
 
@@ -10,10 +11,12 @@ from nio import MatrixRoom, RoomMessageImage, RoomMessageText
 from rich.markup import escape
 from textual import events
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widgets import Footer, Input, Label, ListItem, ListView, RichLog, Static
+from textual.widget import Widget
+from textual.widgets import Footer, Input, Label, ListItem, ListView, Static
 
 from .. import themes
 from ..cache import MessageCache
@@ -28,18 +31,19 @@ from ..formatting import (
     _fuzzy_score,
     _inline_markdown,
     _sender_color,
+    MessageBlock,
     TimelineContext,
     TimelineEntry,
     body_mentions_user,
-    format_timeline_entries,
+    format_date_separator,
+    format_timeline_blocks,
     highlight_mentions,
-    interval_time_gap,
 )
 from ..image_renderer import format_image_message, is_image_message, render_image
 from ..matrix_client import ShelltrixClient
 from ..notifications import notify
 from ..sidebar import _sidebar_room_markup, _sidebar_session_markup
-from ..widgets import _SendButton
+from ..widgets import COLLAPSED_LINES, MessageView, _SendButton
 from .login import LoginScreen
 
 # Correspondance état de sync → (libellé, couleur) pour le header. Les
@@ -56,6 +60,11 @@ SYNC_LABELS = {
 # Sentinelle indiquant que tout l'historique d'un salon a déjà été chargé
 # (peut être vide tant qu'une première page n'a pas été récupérée).
 _HISTORY_END = object()
+
+# Largeur d'indentation de la timeline (gouttière d'auteur), et largeur de
+# repli servant au calcul des lignes visibles avant le premier layout.
+_TIMELINE_INDENT_COLS = 8
+_FALLBACK_TIMELINE_WIDTH = 80
 
 
 class ChatScreen(Screen):
@@ -131,13 +140,7 @@ class ChatScreen(Screen):
                 yield Static("ROOMS", id="room-list-header")
                 yield ListView(id="room-list")
             with Vertical(id="chat-area"):
-                yield RichLog(
-                    id="timeline",
-                    wrap=True,
-                    highlight=True,
-                    markup=True,
-                    auto_scroll=True,
-                )
+                yield VerticalScroll(id="timeline")
                 yield ListView(id="suggestion-list")
                 yield Static("", id="typing-status")
                 with Horizontal(id="input-bar"):
@@ -164,9 +167,11 @@ class ChatScreen(Screen):
         self._tick_status()  # "syncing…" during the first sync
         await self.client.start()
         self._refresh_room_list()
-        timeline = self.query_one("#timeline", RichLog)
-        timeline.write(
-            "\n[dim]· · ·  Pick a room from the list to start chatting  · · ·[/dim]"
+        timeline = self.query_one("#timeline", VerticalScroll)
+        timeline.mount(
+            Static(
+                "\n[dim]· · ·  Pick a room from the list to start chatting  · · ·[/dim]"
+            )
         )
 
     async def on_unmount(self) -> None:
@@ -372,18 +377,79 @@ class ChatScreen(Screen):
 
         Repart toujours d'un contexte de groupage neuf : l'historique stocké
         est groupé de zéro pour un résultat cohérent (des messages ont pu
-        arriver ou du scrollback a pu être inséré en tête).
+        arriver ou du scrollback a pu être inséré en tête). Un widget par
+        message (et non un flux de lignes) : c'est ce qui permet de cibler un
+        message pour le scroll, la réaction ou le reply.
         """
-        timeline = self.query_one("#timeline", RichLog)
-        timeline.clear()
+        timeline = self.query_one("#timeline", VerticalScroll)
         entries = self.message_log.get(room_id, [])
         ctx = TimelineContext()
-        lines, ctx = format_timeline_entries(entries, ctx, header_for=self._header_for)
+        blocks, ctx = format_timeline_blocks(entries, ctx, header_for=self._header_for)
         self._timeline_ctx[room_id] = ctx
-        for line in lines:
-            timeline.write(line)
+        widgets: list[Widget] = []
+        for block in blocks:
+            widgets.extend(self._prefix_widgets(block))
+            widgets.append(self._message_widget(block))
+        timeline.remove_children()
+        timeline.mount(*widgets)
         if scroll_end:
             timeline.scroll_end(animate=False)
+
+    def _prefix_widgets(self, block: MessageBlock) -> list[Widget]:
+        """Séparateurs (date, silence) qui précèdent un bloc, s'il y en a."""
+        widgets: list[Widget] = []
+        if block.date_before:
+            widgets.append(Static("", classes="tl-gap"))
+            widgets.append(
+                Static(format_date_separator(block.entry.time_ms), classes="tl-sep")
+            )
+        elif block.gap_before:
+            # Le séparateur de date rend le filet de silence redondant : un
+            # changement de jour implique forcément un silence de plus de
+            # 5 min, on n'affiche donc qu'un seul repère.
+            widgets.append(Static("", classes="tl-gap"))
+            widgets.append(Static(self._time_gap_line(block.entry), classes="tl-sep"))
+        return widgets
+
+    @staticmethod
+    def _time_gap_line(entry: TimelineEntry) -> str:
+        ts = f"{entry.timestamp} " if entry.timestamp else ""
+        return f"[dim]{ts}{'─' * 36}[/dim]"
+
+    def _message_widget(self, block: MessageBlock) -> MessageView:
+        """Construit le widget d'un message, replié si son corps est long.
+
+        Le corps est passé tel quel : son indentation de gouttière est appliquée
+        par `MessageView` en Padding, ce qui la conserve sur les lignes de
+        continuation après habillage (indenter la chaîne ne les atteindrait pas).
+        """
+        return MessageView(block, collapsed=self._is_long(block))
+
+    def _is_long(self, block: MessageBlock) -> bool:
+        """Un message est replié s'il dépasse le seuil de lignes VISIBLES.
+
+        On mesure sur les lignes telles qu'elles seront rendues, donc en tenant
+        compte de l'habillage à la largeur du terminal : compter les seuls `\n`
+        ignorerait tous les messages longs sans retour à la ligne — le cas le
+        plus courant dans un chat, et précisément celui qui déborde. Le markup
+        Rich des mentions est retiré du décompte, sinon `@bob` compterait pour
+        ses balises.
+        """
+        plain = re.sub(r"\[/?[^\[\]]+\]", "", block.entry.body)
+        width = max(self.timeline_width - _TIMELINE_INDENT_COLS, 20)
+        rendered = sum(
+            max(1, -(-len(part) // width)) for part in plain.split("\n")
+        )
+        return rendered >= COLLAPSED_LINES
+
+    @property
+    def timeline_width(self) -> int:
+        """Largeur utile de la timeline, avec repli sûr avant layout."""
+        try:
+            width = self.query_one("#timeline", VerticalScroll).content_size.width
+        except NoMatches:
+            return _FALLBACK_TIMELINE_WIDTH
+        return width if width > 20 else _FALLBACK_TIMELINE_WIDTH
 
     def open_message(self, room_id: str, event_id: str) -> None:
         """Ouvre un salon et se positionne sur un message précis.
@@ -408,7 +474,7 @@ class ChatScreen(Screen):
             (i for i, e in enumerate(entries) if e.event_id == event_id),
             len(entries) - 1,
         )
-        timeline = self.query_one("#timeline", RichLog)
+        timeline = self.query_one("#timeline", VerticalScroll)
         timeline.scroll_to(y=min(max(0, idx), timeline.max_scroll_y), animate=False)
         self._refresh_sidebar()
         self._refresh_typing_display()
@@ -419,14 +485,14 @@ class ChatScreen(Screen):
     def action_timeline_down(self) -> None:
         if not self.active_room_id:
             return
-        timeline = self.query_one("#timeline", RichLog)
+        timeline = self.query_one("#timeline", VerticalScroll)
         timeline.scroll_down(animate=False)
 
     def action_timeline_history(self) -> None:
         """Remonte la timeline ; en haut, charge des messages plus anciens."""
         if not self.active_room_id:
             return
-        timeline = self.query_one("#timeline", RichLog)
+        timeline = self.query_one("#timeline", VerticalScroll)
         at_top = timeline.scroll_y <= 0
         if at_top:
             self._schedule_history_load()
@@ -460,7 +526,7 @@ class ChatScreen(Screen):
                 if resp is not None:
                     self._history_token[room_id] = _HISTORY_END
                 return
-            timeline = self.query_one("#timeline", RichLog)
+            timeline = self.query_one("#timeline", VerticalScroll)
             prev_scroll = timeline.scroll_y
             entries = self._entries_from_events(room_id, list(resp.chunk))
             existing_ids = {e.event_id for e in self.message_log.get(room_id, [])}
@@ -971,11 +1037,12 @@ class ChatScreen(Screen):
         if room_id != self.active_room_id:
             return
         ctx = self._timeline_ctx.get(room_id, TimelineContext())
-        lines, ctx = format_timeline_entries([entry], ctx, header_for=self._header_for)
+        blocks, ctx = format_timeline_blocks([entry], ctx, header_for=self._header_for)
         self._timeline_ctx[room_id] = ctx
-        timeline = self.query_one("#timeline", RichLog)
-        for line in lines:
-            timeline.write(line)
+        timeline = self.query_one("#timeline", VerticalScroll)
+        widgets: list[Widget] = [*self._prefix_widgets(blocks[0])]
+        widgets.append(self._message_widget(blocks[0]))
+        timeline.mount(*widgets)
 
     def _notify_incoming(
         self,
@@ -1078,16 +1145,16 @@ class ChatScreen(Screen):
                 self.client.creds.access_token,
                 self.client.creds.homeserver,
             )
-            timeline = self.query_one("#timeline", RichLog)
+            timeline = self.query_one("#timeline", VerticalScroll)
             if is_image_message(result):
                 # Extraire le chemin et afficher
                 parts = result.split(":", 2)
                 if len(parts) == 3:
                     local_path = parts[1]
                     img_result = render_image(local_path)
-                    timeline.write(f"        {img_result}")
+                    timeline.mount(Static(f"        {img_result}"))
             elif result:
-                timeline.write(f"        {result}")
+                timeline.mount(Static(f"        {result}"))
 
     async def _show_invite_dialog(
         self, room_id: str, room: MatrixRoom, inviter: str
@@ -1119,7 +1186,7 @@ class ChatScreen(Screen):
         self._timeline_ctx.pop(self.active_room_id, None)
         self.unread[self.active_room_id] = 0
         self._cache.clear_room(self.active_room_id)
-        self.query_one("#timeline", RichLog).clear()
+        self.query_one("#timeline", VerticalScroll).remove_children()
         self._refresh_room_list()
         self.app.notify("Timeline cleared")
 
