@@ -65,31 +65,6 @@ def isolated_config(tmp_path, monkeypatch):
     return cfg
 
 
-@pytest.fixture()
-def fake_keyring(monkeypatch):
-    """Keyring en mémoire : aucun trousseau système contacté pendant les tests."""
-    import keyring
-
-    store: dict[tuple[str, str], str] = {}
-
-    def set_pw(service: str, username: str, password: str) -> None:
-        store[(service, username)] = password
-
-    def get_pw(service: str, username: str) -> str | None:
-        return store.get((service, username))
-
-    def del_pw(service: str, username: str) -> None:
-        if (service, username) in store:
-            del store[(service, username)]
-            return
-        raise keyring.errors.PasswordDeleteError()
-
-    monkeypatch.setattr(keyring, "set_password", set_pw)
-    monkeypatch.setattr(keyring, "get_password", get_pw)
-    monkeypatch.setattr(keyring, "delete_password", del_pw)
-    return store
-
-
 def _entry(event_id: str, body: str = "hello", sender: str = "@bob:hs") -> TimelineEntry:
     return TimelineEntry(
         sender=sender,
