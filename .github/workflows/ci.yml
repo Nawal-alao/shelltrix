@@ -16,9 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Historique complet : les tests de supply-chain (H1) vérifient que
-          # la référence pinnée existe et porte bien les correctifs de
-          # durcissement. Inopérant sur un clone superficiel.
+          # Full history: the supply-chain tests (H1) check that the pinned
+          # ref exists and does carry the hardening fixes. Ineffective on a
+          # shallow clone.
           fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}

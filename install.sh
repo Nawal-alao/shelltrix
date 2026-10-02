@@ -1,40 +1,40 @@
 #!/bin/sh
 #
-# shelltrix — installateur cross-platform (Linux + macOS; Windows via WSL2).
+# shelltrix — cross-platform installer (Linux + macOS; Windows via WSL2).
 #
-# Usage :
+# Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Nawal-alao/shelltrix/main/install.sh | sh
 #
-# Le script est idempotent : relancer sur une machine déjà configurée ne
-# casse rien (il ne réinstalle que ce qui manque). Il ne pipe jamais de
-# commande sudo sans l'annoncer explicitement à l'écran avant.
+# The script is idempotent: re-running it on an already configured machine
+# breaks nothing (it only reinstalls what is missing). It never pipes a sudo
+# command without announcing it on screen beforehand.
 #
-# NOTE publication PyPI : une fois shelltrix publié sur PyPI, remplacer
-# l'installation ci-dessous par `pipx install shelltrix` (et le curl du README
-# par le chemin PyPI). Le `git+https://...` reste valable en attendant.
+# NOTE PyPI publishing: once shelltrix is published on PyPI, replace the
+# install below with `pipx install shelltrix` (and the README curl with the
+# PyPI path). The `git+https://...` stays valid until then.
 
 set -e
 
 # ---------------------------------------------------------------------------
-# Épinglage de la source (sécurité supply-chain, H1)
+# Pinning the source (supply-chain security, H1)
 # ---------------------------------------------------------------------------
-# La version installée est **pinnée** à une référence immuable : le tag de
-# release `v1.0.0`, posé sur le dernier commit de la série. Un force-push ou
-# un commit malveillant sur `main` ne peut donc pas être déployé par ce
-# script : la source est vérifiable et rejouable, et elle est *le dernier
-# commit published* — pas un commit retardé d'une version.
-# Pourquoi un tag et pas un SHA : un fichier ne peut pas contenir le SHA du
-# commit qui le contient (le SHA changerait dès qu'on l'écrit). Le tag lève
-# cette auto-référence : il désigne le dernier commit et ne bouge plus.
-# INVARIANT : ce tag ne doit JAMAIS être déplacé ni supprimé.
-# Surcharge en cas de besoin :   SHELLTRIX_REF=<tag|commit> ./install.sh
-# Une fois le paquet publié sur PyPI, ce bloc est remplacé par une install
-# PyPI épinglée en version (`pipx install shelltrix==x.y.z`).
-# Verrouillé par `test_pinned_ref_installs_hardened_code`.
+# The installed version is **pinned** to an immutable ref: the release tag
+# `v1.0.0`, set on the last commit of the series. A force-push or a malicious
+# commit on `main` can therefore not be deployed by this script: the source
+# is verifiable and replayable, and it is *the last published commit* — not a
+# commit one version behind.
+# Why a tag and not a SHA: a file cannot contain the SHA of the commit that
+# contains it (the SHA would change as soon as we write it). The tag removes
+# that self-reference: it designates the last commit and never moves again.
+# INVARIANT: this tag must NEVER be moved nor deleted.
+# Override if needed:            SHELLTRIX_REF=<tag|commit> ./install.sh
+# Once the package is published on PyPI, this block is replaced by a
+# version-pinned PyPI install (`pipx install shelltrix==x.y.z`).
+# Locked down by `test_pinned_ref_installs_hardened_code`.
 SHELLTRIX_REF="${SHELLTRIX_REF:-v1.0.0}"
 
 # ---------------------------------------------------------------------------
-# Couleurs/utilitaires d'affichage (POSIX — pas de bash-ismes)
+# Display colors/utilities (POSIX — no bashisms)
 # ---------------------------------------------------------------------------
 if [ -t 1 ]; then
     _BOLD='\033[1m'
@@ -53,9 +53,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Bannière ASCII "SHELLTRIX" (bloc fixe, pas de police générée). La couleur est
-# gérée par les variables ci-dessus (déjà "éteintes" hors tty) ; seule la
-# locale indique si les caractères de dessin de boîte sont sûrs à imprimer.
+# "SHELLTRIX" ASCII banner (fixed block, no generated font). The color is
+# handled by the variables above (already "off" outside a tty); only the
+# locale tells whether box-drawing characters are safe to print.
 # ---------------------------------------------------------------------------
 banner() {
     case "${LANG:-}${LC_ALL:-}" in
@@ -89,7 +89,7 @@ die()   { printf '%b%b%s%b\n' "$_RED" "ERROR " "$1" "$_RESET" >&2; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 # ---------------------------------------------------------------------------
-# 1. Détection de l'OS
+# 1. OS detection
 # ---------------------------------------------------------------------------
 OS="$(uname -s 2>/dev/null || echo Unknown)"
 case "$OS" in
@@ -98,10 +98,10 @@ case "$OS" in
     *)
         cat <<EOF
 
-${_RED}Shelltrix nécessite Linux ou macOS.${_RESET}
+${_RED}Shelltrix requires Linux or macOS.${_RESET}
 
-Sur Windows, installe via WSL2 puis relance ce script depuis ton terminal
-WSL (Ubuntu de préférence) :
+On Windows, install via WSL2 then re-run this script from your WSL
+terminal (Ubuntu preferred):
   https://learn.microsoft.com/windows/wsl/install
 
 EOF
@@ -110,24 +110,24 @@ EOF
 esac
 
 # ---------------------------------------------------------------------------
-# 2. Vérification Python >= 3.10
+# 2. Python >= 3.10 check
 # ---------------------------------------------------------------------------
-step "Vérification de Python (>= 3.10)"
+step "Checking Python (>= 3.10)"
 
 if ! command_exists python3; then
     if [ "$OS_FAMILY" = "macos" ]; then
         cat <<EOF
-${_RED}python3 est introuvable.${_RESET}
-Installe Python 3.10+ :
+${_RED}python3 not found.${_RESET}
+Install Python 3.10+:
   https://www.python.org/downloads/macos/
-  (ou via Homebrew : brew install python)
-Puis relance ce script.
+  (or via Homebrew: brew install python)
+Then re-run this script.
 EOF
     else
         cat <<EOF
-${_RED}python3 est introuvable.${_RESET}
-Installe Python 3.10+ via le gestionnaire de paquets de ta distro
-(par ex. 'sudo apt install python3' sur Debian/Ubuntu), puis relance ce
+${_RED}python3 not found.${_RESET}
+Install Python 3.10+ via your distro's package manager
+(e.g. 'sudo apt install python3' on Debian/Ubuntu), then re-run this
 script.
 EOF
     fi
@@ -140,75 +140,75 @@ PY_MINOR="$(printf '%s' "$PY_VERSION" | cut -d. -f2)"
 
 if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }; then
     cat <<EOF
-${_RED}Python $PY_VERSION est trop ancien : shelltrix requiert Python >= 3.10.${_RESET}
-Met à niveau Python puis relance ce script.
+${_RED}Python $PY_VERSION is too old: shelltrix needs Python >= 3.10.${_RESET}
+Upgrade Python then re-run this script.
 EOF
     exit 1
 fi
-info "Python $PY_VERSION détecté (>= 3.10) : OK"
+info "Python $PY_VERSION detected (>= 3.10): OK"
 
 # ---------------------------------------------------------------------------
-# 3. libolm — la dépendance critique (E2EE)
+# 3. libolm — the critical dependency (E2EE)
 # ---------------------------------------------------------------------------
-step "Vérification de libolm"
+step "Checking libolm"
 
 if [ "$OS_FAMILY" = "macos" ]; then
     if ! command_exists brew; then
         cat <<EOF
-${_RED}Homebrew est introuvable (requis pour installer libolm).${_RESET}
-Installe Homebrew :  https://brew.sh
-Puis relance ce script.
+${_RED}Homebrew not found (required to install libolm).${_RESET}
+Install Homebrew:   https://brew.sh
+Then re-run this script.
 EOF
         exit 1
     fi
     if brew list libolm >/dev/null 2>&1; then
-        info "libolm déjà installé : OK"
+        info "libolm already installed: OK"
     else
-        echo "  ${_YELLOW}Installation de libolm via Homebrew (aucun sudo requis)…${_RESET}"
+        echo "  ${_YELLOW}Installing libolm via Homebrew (no sudo required)…${_RESET}"
         brew install libolm
-        info "libolm installé"
+        info "libolm installed"
     fi
 else
-    # Linux : identifier la distro via /etc/os-release
+    # Linux: identify the distro via /etc/os-release
     . /etc/os-release 2>/dev/null || { . /usr/lib/os-release 2>/dev/null || DISTRO_ID="unknown"; }
     DISTRO_ID="${ID:-unknown}"
 
     case "$DISTRO_ID" in
         debian|ubuntu|pop|linuxmint|elementary)
             if dpkg -s libolm-dev >/dev/null 2>&1; then
-                info "libolm-dev déjà installé : OK"
+                info "libolm-dev already installed: OK"
             else
-                echo "  ${_YELLOW}Installation de libolm-dev via apt (sudo requis)…${_RESET}"
+                echo "  ${_YELLOW}Installing libolm-dev via apt (sudo required)…${_RESET}"
                 sudo apt-get update
                 sudo apt-get install -y libolm-dev
-                info "libolm-dev installé"
+                info "libolm-dev installed"
             fi
             ;;
         fedora|rhel|centos|rocky|almalinux)
             if rpm -q libolm-devel >/dev/null 2>&1; then
-                info "libolm-devel déjà installé : OK"
+                info "libolm-devel already installed: OK"
             else
-                echo "  ${_YELLOW}Installation de libolm-devel via dnf (sudo requis)…${_RESET}"
+                echo "  ${_YELLOW}Installing libolm-devel via dnf (sudo required)…${_RESET}"
                 sudo dnf install -y libolm-devel
-                info "libolm-devel installé"
+                info "libolm-devel installed"
             fi
             ;;
         arch|manjaro|endeavouros)
             if pacman -Q libolm >/dev/null 2>&1; then
-                info "libolm déjà installé : OK"
+                info "libolm already installed: OK"
             else
-                echo "  ${_YELLOW}Installation de libolm via pacman (sudo requis)…${_RESET}"
+                echo "  ${_YELLOW}Installing libolm via pacman (sudo required)…${_RESET}"
                 sudo pacman -S --noconfirm libolm
-                info "libolm installé"
+                info "libolm installed"
             fi
             ;;
         *)
             cat <<EOF
-${_RED}Distro Linux non reconnue : installe libolm manuellement.${_RESET}
-Shelltrix (E2EE) a besoin de libolm. Réfère-toi aux instructions de la matrice
-de build de matrix-org/olm :
+${_RED}Unrecognized Linux distro: install libolm manually.${_RESET}
+Shelltrix (E2EE) needs libolm. Refer to the build matrix instructions of
+matrix-org/olm:
   https://github.com/matrix-org/olm
-Puis relance ce script (ou installe shelltrix par une autre méthode).
+Then re-run this script (or install shelltrix by another method).
 EOF
             exit 1
             ;;
@@ -216,28 +216,28 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# 4. pipx (ou uv si déjà présent)
+# 4. pipx (or uv if already present)
 # ---------------------------------------------------------------------------
-step "Vérification de pipx / uv"
+step "Checking pipx / uv"
 
-# pipx installe les scripts dans ~/.local/bin (ajouté au PATH via ensurepath).
-# On le préfixe dès maintenant pour trouver shelltrix juste après l'installation.
+# pipx installs scripts into ~/.local/bin (added to the PATH via ensurepath).
+# We prepend it right away so shelltrix is found just after installation.
 LOCAL_BIN="$HOME/.local/bin"
 PATH="$LOCAL_BIN:$PATH"
 export PATH
 
-# Sur Linux, Debian 11+ (et la plupart des distros) bloque les installations
-# pip globales via PEP 668 (« externally-managed-environment »). pipx via le
-# gestionnaire de paquets contourne ce blocage proprement. macOS utilise pipx
-# binaire officiel (aucun sudo requis).
+# On Linux, Debian 11+ (and most distros) blocks global pip installs via
+# PEP 668 ("externally-managed-environment"). pipx via the package manager
+# sidesteps that block cleanly. macOS uses the official pipx binary
+# (no sudo required).
 install_pipx() {
     if [ "$OS_FAMILY" = "macos" ]; then
-        echo "  ${_YELLOW}Installation de pipx via Homebrew (aucun sudo requis)…${_RESET}"
+        echo "  ${_YELLOW}Installing pipx via Homebrew (no sudo required)…${_RESET}"
         brew install pipx
     else
-        echo "  ${_YELLOW}Installation de pipx via le gestionnaire de paquets (sudo requis)…${_RESET}"
-        # pipx est shipé par plusieurs distros ; on passe par l'utilitaire d'archives
-        # quel que soit le gestionnaire, en essayant de façon idempotente.
+        echo "  ${_YELLOW}Installing pipx via the package manager (sudo required)…${_RESET}"
+        # pipx is shipped by several distros; we go through the archive
+        # utility whichever the manager, trying idempotently.
         if command_exists apt-get; then
             sudo apt-get install -y pipx
         elif command_exists dnf; then
@@ -245,7 +245,7 @@ install_pipx() {
         elif command_exists pacman; then
             sudo pacman -S --noconfirm python-pipx
         else
-            die "pipx absent et aucun gestionnaire connu : installe pipx manuellement (https://pipx.pypa.io/)."
+            die "pipx absent and no known package manager: install pipx manually (https://pipx.pypa.io/)."
         fi
     fi
     if command_exists pipx; then
@@ -256,36 +256,36 @@ install_pipx() {
 INSTALLER=""
 if command_exists uv; then
     INSTALLER="uv"
-    info "uv détecté : utilisation de 'uv tool install' (plus rapide)"
+    info "uv detected: using 'uv tool install' (faster)"
 elif command_exists pipx; then
     INSTALLER="pipx"
-    info "pipx déjà présent : OK"
+    info "pipx already present: OK"
 else
     INSTALLER="pipx"
     install_pipx
     if command_exists pipx; then
-        info "pipx installé"
+        info "pipx installed"
     else
-        die "pipx n'a pas pu être installé : relance le script après avoir installé pipx manuellement."
+        die "pipx could not be installed: re-run the script after installing pipx manually."
     fi
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Installation de shelltrix
+# 5. Installing shelltrix
 # ---------------------------------------------------------------------------
-step "Installation de shelltrix (pinné sur ${SHELLTRIX_REF})"
+step "Installing shelltrix (pinned to ${SHELLTRIX_REF})"
 
-# Valide la référence avant de la passer à pipx/uv : seule une chaîne
-# hexadécimale (SHA de commit, au moins 7 caractères) est acceptée.
+# Validate the ref before passing it to pipx/uv: only a hexadecimal string
+# (commit SHA, at least 7 characters) is accepted.
 case "$SHELLTRIX_REF" in
-    ''|*[!0-9a-fA-F]*) die "Référence SHELLTRIX_REF invalide : '$SHELLTRIX_REF' (SHA de commit hexadécimal requis)." ;;
+    ''|*[!0-9a-fA-F]*) die "Invalid SHELLTRIX_REF: '$SHELLTRIX_REF' (hexadecimal commit SHA required)." ;;
 esac
-[ "${#SHELLTRIX_REF}" -lt 7 ] && die "Référence SHELLTRIX_REF trop courte : '$SHELLTRIX_REF'"
+[ "${#SHELLTRIX_REF}" -lt 7 ] && die "SHELLTRIX_REF too short: '$SHELLTRIX_REF'"
 
 install_shelltrix() {
-    # NOTE publication PyPI : remplacer le git+https pinné par
-    # `pipx install shelltrix==x.y.z` (ou `uv tool install shelltrix==x.y.z`)
-    # une fois le paquet publié.
+    # NOTE PyPI publishing: replace the pinned git+https with
+    # `pipx install shelltrix==x.y.z` (or `uv tool install shelltrix==x.y.z`)
+    # once the package is published.
     SHELLTRIX_SOURCE="git+https://github.com/Nawal-alao/shelltrix.git@${SHELLTRIX_REF}"
     if [ "$INSTALLER" = "uv" ]; then
         uv tool install "$SHELLTRIX_SOURCE"
@@ -295,12 +295,12 @@ install_shelltrix() {
 }
 
 if command_exists shelltrix; then
-    info "shelltrix déjà installé : OK"
+    info "shelltrix already installed: OK"
     SHELLTRIX_VERSION="$(shelltrix --version 2>/dev/null || echo unknown)"
-    warn "shelltrix présent (version actuelle : $SHELLTRIX_VERSION) — pour le mettre à jour : pipx upgrade shelltrix (ou uv tool upgrade shelltrix)."
+    warn "shelltrix present (current version: $SHELLTRIX_VERSION) — to upgrade it: pipx upgrade shelltrix (or uv tool upgrade shelltrix)."
 else
     install_shelltrix
-    info "shelltrix installé"
+    info "shelltrix installed"
 fi
 
 # ---------------------------------------------------------------------------
@@ -308,11 +308,11 @@ fi
 # ---------------------------------------------------------------------------
 cat <<EOF
 
-${_BOLD}Installation terminée.${_RESET}
-  • Lance shelltrix avec :        ${_BOLD}shelltrix${_RESET}
-  • Vérifie la version :      ${_BOLD}shelltrix --version${_RESET}
-  • Config :                  ~/.config/shelltrix/
-  • Si 'shelltrix' n'est pas trouvé, rouvre ton terminal (pipx a ajouté
-    ~/.local/bin à ton PATH).
+${_BOLD}Installation complete.${_RESET}
+  • Launch shelltrix with:       ${_BOLD}shelltrix${_RESET}
+  • Check the version:           ${_BOLD}shelltrix --version${_RESET}
+  • Config:                      ~/.config/shelltrix/
+  • If 'shelltrix' is not found, reopen your terminal (pipx has added
+    ~/.local/bin to your PATH).
 
 EOF
