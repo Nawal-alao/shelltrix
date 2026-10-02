@@ -127,8 +127,14 @@ ToastRack {
    Login — carte de bienvenue centrée
    ===================================================================== */
 
+LoginScreen, AccountPickerScreen {
+    align: center middle;
+}
+
 #login-wrap {
     align: center middle;
+    width: 100%;
+    height: 1fr;
 }
 
 #login-card {
@@ -644,7 +650,13 @@ SplashScreen {
    Premium flat : minimaliste, lisible, bien structuré.
    ===================================================================== */
 
-CommandPalette {
+ModalScreen {
+    align: center middle;
+    background: $bg 85%;
+}
+
+CommandPalette,
+SearchDialog {
     align: center middle;
     background: $bg 85%;
 }
@@ -801,19 +813,24 @@ CommandPalette {
 
 /* -- Modal « Join a room » --------------------------------------------- */
 
+JoinRoomDialog {
+    align: center middle;
+    background: $bg 85%;
+}
+
 #jr-dialog {
     width: 56;
     max-width: 94%;
     height: auto;
     border: $modal_border;
     background: $surface;
-    padding: 1 2 1 2;
+    padding: 1 2;
 }
 
 #jr-title {
     width: 100%;
     text-style: bold;
-    color: $muted;
+    color: $primary;
     padding-bottom: 1;
 }
 
@@ -844,7 +861,7 @@ CommandPalette {
 
 SasDialog {
     align: center middle;
-    background: $bg 80%;
+    background: $bg 85%;
 }
 
 #sas-dialog {
@@ -901,7 +918,7 @@ SasDialog {
 
 InviteDialog {
     align: center middle;
-    background: $bg 80%;
+    background: $bg 85%;
 }
 
 #invite-dialog {
@@ -953,7 +970,7 @@ InviteDialog {
 RecoveryDialog,
 StoreUnlockDialog {
     align: center middle;
-    background: $bg 80%;
+    background: $bg 85%;
 }
 
 #rec-dialog {
