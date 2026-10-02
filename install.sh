@@ -18,19 +18,20 @@ set -e
 # ---------------------------------------------------------------------------
 # Épinglage de la source (sécurité supply-chain, H1)
 # ---------------------------------------------------------------------------
-# La version installée est **pinnée** à une référence explicite (commit ou
-# tag). Un force-push ou un commit malveillant sur `main` ne peut donc pas
-# être déployé par ce script : la source est vérifiable et rejouable.
+# La version installée est **pinnée** à une référence immuable : le tag de
+# release `v1.0.0`, posé sur le dernier commit de la série. Un force-push ou
+# un commit malveillant sur `main` ne peut donc pas être déployé par ce
+# script : la source est vérifiable et rejouable, et elle est *le dernier
+# commit published* — pas un commit retardé d'une version.
+# Pourquoi un tag et pas un SHA : un fichier ne peut pas contenir le SHA du
+# commit qui le contient (le SHA changerait dès qu'on l'écrit). Le tag lève
+# cette auto-référence : il désigne le dernier commit et ne bouge plus.
+# INVARIANT : ce tag ne doit JAMAIS être déplacé ni supprimé.
 # Surcharge en cas de besoin :   SHELLTRIX_REF=<tag|commit> ./install.sh
 # Une fois le paquet publié sur PyPI, ce bloc est remplacé par une install
 # PyPI épinglée en version (`pipx install shelltrix==x.y.z`).
-# INVARIANT : la valeur ci-dessous doit pointer sur un commit qui porte les
-# correctifs de durcissement (H1-H4) ET dont le propre `install.sh` épingle
-# lui aussi un commit porteur de ces correctifs. En effet le README sert ce
-# script depuis cette valeur : si elle désignait un commit antérieur au
-# durcissement, `curl | sh` installerait du code non durci.
 # Verrouillé par `test_pinned_ref_installs_hardened_code`.
-SHELLTRIX_REF="${SHELLTRIX_REF:-7b9d401baa59af47f30a6925f57bb1a80364a84e}"
+SHELLTRIX_REF="${SHELLTRIX_REF:-v1.0.0}"
 
 # ---------------------------------------------------------------------------
 # Couleurs/utilitaires d'affichage (POSIX — pas de bash-ismes)

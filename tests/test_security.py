@@ -471,25 +471,38 @@ class TestMarkupEscaping:
 class TestSupplyChainInstall:
     ROOT = Path(__file__).resolve().parent.parent
 
+    # Une référence pinnée est soit un SHA (40 hex), soit le tag de release.
+    # Le tag est nécessaire parce qu'un fichier ne peut pas contenir le SHA du
+    # commit qui le contient : `v1.0.0` désigne bien le dernier commit, là où
+    # un SHA written dans ce même commit serait forcément en retard d'un.
+    _REF_RE = r'([0-9a-f]{40}|v[0-9]+(?:\.[0-9]+)*(?:-[0-9A-Za-z.]+)?)'
+    _PIN_RE = r'SHELLTRIX_REF="\$\{SHELLTRIX_REF:-' + _REF_RE + r'\}"'
+
     def _pinned_ref(self) -> str:
         install = (self.ROOT / "install.sh").read_text()
-        m = re.search(
-            r'SHELLTRIX_REF="\$\{SHELLTRIX_REF:-([0-9a-f]{40})\}"', install
+        m = re.search(self._PIN_RE, install)
+        assert m, (
+            "install.sh doit pinnner SHELLTRIX_REF sur un SHA de 40 hex "
+            "ou sur le tag de release (ex. v1.0.0)"
         )
-        assert m, "install.sh doit pinnner SHELLTRIX_REF sur un SHA de 40 hex"
         return m.group(1)
+
+    @staticmethod
+    def _resolve(ref: str) -> str | None:
+        """SHA du commit désigné par `ref`, ou None si absent du clone."""
+        proc = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            capture_output=True,
+            text=True,
+        )
+        return proc.stdout.strip() or None
 
     def test_install_sh_pins_a_real_commit(self) -> None:
         ref = self._pinned_ref()
-        ok = (
-            subprocess.run(
-                ["git", "cat-file", "-e", f"{ref}^{{commit}}"],
-                cwd=str(self.ROOT),
-                capture_output=True,
-            ).returncode
-            == 0
-        )
-        assert ok, f"SHELLTRIX_REF={ref} n'est pas un commit du dépôt"
+        if self._resolve(ref) is None:
+            pytest.skip(f"{ref} absent du clone (clone sans tags ?)")
+        assert not ref.startswith("main"), "une branche mouvante n'est pas pinnée"
 
     def test_install_sh_urls_are_pinned_https(self) -> None:
         content = (self.ROOT / "install.sh").read_text()
@@ -543,10 +556,8 @@ class TestSupplyChainInstall:
         # Maillon 2 : le script servi depuis `ref` épingle lui aussi du code durci.
         served = self._show(ref, "install.sh")
         assert served is not None, f"install.sh introuvable au commit {ref}"
-        m = re.search(
-            r'SHELLTRIX_REF="\$\{SHELLTRIX_REF:-([0-9a-f]{40})\}"', served
-        )
-        assert m, f"install.sh@{ref} ne pinnne pas de SHA"
+        m = re.search(self._PIN_RE, served)
+        assert m, f"install.sh@{ref} ne pinne ni SHA ni tag"
         inner = m.group(1)
 
         inner_code = self._show(inner, "src/shelltrix/cache.py")
@@ -555,6 +566,28 @@ class TestSupplyChainInstall:
         assert "MAX_CACHE_BYTES" in inner_code, (
             f"install.sh@{ref} épingle {inner}, commit antérieur au durcissement : "
             "`curl | sh` depuis le README installerait du code non durci."
+        )
+
+    def test_pinned_ref_is_in_this_history(self) -> None:
+        """La référence pinnée doit appartenir à l'historique de `main`.
+
+        Elle est posée sur le commit de release, donc forcément un ancêtre de
+        `HEAD` — et non un commit d'une branche divergente ou d'un autre
+        dépôt, que `pipx install git+…@ref` accepterait sans protestation.
+        (Le « le pin est-il à jour ? » se vérifie au release : le tag est posé
+        sur le dernier commit, et `install.sh` est commité dans le même lot.)
+        """
+        ref = self._pinned_ref()
+        if self._resolve(ref) is None:
+            pytest.skip(f"{ref} absent du clone (tag non poussé ?)")
+        merged = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", f"{ref}^{{commit}}", "HEAD"],
+            cwd=str(self.ROOT),
+            capture_output=True,
+        )
+        assert merged.returncode == 0, (
+            f"SHELLTRIX_REF={ref} n'est pas un ancêtre de HEAD : "
+            "l'installateur servirait du code d'une autre histoire."
         )
 
 
