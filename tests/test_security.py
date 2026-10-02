@@ -522,6 +522,72 @@ class TestSupplyChainInstall:
         assert f"@{ref}" in readme  # pinned manual pipx install
         assert "main/install.sh" not in readme
 
+    @staticmethod
+    def _check_ref(ref: str) -> subprocess.CompletedProcess[str]:
+        """Run install.sh's own ref validation, in isolation.
+
+        `--check-ref` exists so this exercises the shipped validation instead
+        of a copy of it that could drift from the script.
+        """
+        return subprocess.run(
+            ["sh", "install.sh", "--check-ref", ref],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            capture_output=True,
+            text=True,
+        )
+
+    def test_installer_accepts_its_own_pinned_ref(self) -> None:
+        """`install.sh` must accept the ref it pins itself.
+
+        Regression: the released v1.0.1 installer validated SHELLTRIX_REF as
+        hexadecimal only, so its own default `v1.0.1` was rejected and
+        `curl … | sh` died at step 5 — after having installed libolm and
+        pipx. Every other check in this class passed, because they all read
+        the pin as a string instead of asking the script whether it is legal.
+        """
+        ref = self._pinned_ref()
+        proc = self._check_ref(ref)
+        assert proc.returncode == 0, (
+            f"install.sh pins {ref} but rejects it as invalid: `curl | sh` "
+            f"would abort before installing. Output: {proc.stdout}{proc.stderr}"
+        )
+
+    def test_installer_rejects_unsafe_refs(self) -> None:
+        """The ref reaches a git URL: keep the shell out of it.
+
+        Rejected are the empty string (silently installs HEAD), anything
+        starting with `-` (read as an option rather than a ref), and anything
+        carrying shell metacharacters or whitespace, since the ref is passed
+        into `uv tool install "git+…@$REF"`.
+        """
+        for bad in ("", "-rf", "--version", "v1.0.1;id", "v1 0 1", "$(id)",
+                    "v1.0.1|sh", "v1.0.1&&id", "../../etc/passwd", "v1.0.1\nid"):
+            proc = self._check_ref(bad)
+            assert proc.returncode != 0, (
+                f"install.sh accepts the unsafe ref {bad!r}; it must be refused"
+            )
+
+    def test_installer_rejects_bad_ref_before_touching_the_system(self) -> None:
+        """An invalid ref must abort before libolm or pipx is installed.
+
+        The check used to live at step 5, so a typo'd ref installed system
+        packages first and failed afterwards — leaving the machine modified by
+        an install that never happened.
+        """
+        install = (self.ROOT / "install.sh").read_text()
+        assert 'if ! valid_ref "$SHELLTRIX_REF"' in install, (
+            "install.sh no longer validates the ref with valid_ref; if the "
+            "check moved or was renamed, re-check where it runs relative to "
+            "the side effects below"
+        )
+        check = install.index('if ! valid_ref "$SHELLTRIX_REF"')
+        for side_effect in ("apt-get install", "dnf install", "pacman -S",
+                            "brew install libolm"):
+            assert install.index(side_effect) > check, (
+                f"{side_effect} runs before the ref is validated: a bad "
+                "SHELLTRIX_REF would modify the system before failing"
+            )
+
     def test_pinned_ref_matches_the_declared_version(self) -> None:
         """The pin and the package version must designate the same release.
 

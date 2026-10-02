@@ -16,6 +16,33 @@
 set -e
 
 # ---------------------------------------------------------------------------
+# Ref validation
+# ---------------------------------------------------------------------------
+# A pinned ref is a release tag (v1.0.1, v1.2.0-rc1) or a commit SHA. It is
+# NOT restricted to hexadecimal: the pin below is a tag by necessity, since a
+# file cannot contain the SHA of the commit that contains it.
+# `valid_ref` therefore accepts the tag charset and rejects what could be read
+# as an option (`-x`, to dodge a guard into the installer's own arguments) or
+# smuggle a second command through the unquoted git URL.
+# NOTE: `sh install.sh --check-ref <ref>` runs this check alone, so the test
+# suite exercises the real validation instead of a copy of it.
+valid_ref() {
+    case "$1" in
+        ''|-*)                return 1 ;;
+        *[!A-Za-z0-9._+-]*)   return 1 ;;
+    esac
+    return 0
+}
+
+if [ "${1:-}" = "--check-ref" ]; then
+    if [ -z "${2:-}" ] || ! valid_ref "$2"; then
+        exit 1
+    fi
+    printf 'ref ok: %s\n' "$2"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # Pinning the source (supply-chain security, H1)
 # ---------------------------------------------------------------------------
 # The installed version is **pinned** to an immutable ref: the release tag
@@ -87,6 +114,14 @@ warn()  { printf '%b%b%s%b\n' "$_YELLOW" "WARN " "$1" "$_RESET"; }
 die()   { printf '%b%b%s%b\n' "$_RED" "ERROR " "$1" "$_RESET" >&2; exit 1; }
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+# The ref is validated HERE, before anything is installed on the system.
+# Previously this check sat at step 5, after libolm and pipx had already been
+# installed: an invalid ref therefore modified the machine and *then* aborted.
+# A typo in SHELLTRIX_REF must cost the user nothing.
+if ! valid_ref "$SHELLTRIX_REF"; then
+    die "Invalid SHELLTRIX_REF: '$SHELLTRIX_REF' (a release tag like v1.0.1 or a commit SHA is expected)."
+fi
 
 # ---------------------------------------------------------------------------
 # 1. OS detection
@@ -275,12 +310,12 @@ fi
 # ---------------------------------------------------------------------------
 step "Installing shelltrix (pinned to ${SHELLTRIX_REF})"
 
-# Validate the ref before passing it to pipx/uv: only a hexadecimal string
-# (commit SHA, at least 7 characters) is accepted.
-case "$SHELLTRIX_REF" in
-    ''|*[!0-9a-fA-F]*) die "Invalid SHELLTRIX_REF: '$SHELLTRIX_REF' (hexadecimal commit SHA required)." ;;
-esac
-[ "${#SHELLTRIX_REF}" -lt 7 ] && die "SHELLTRIX_REF too short: '$SHELLTRIX_REF'"
+# Re-validated here, at the point of use: `valid_ref` was checked before the
+# system was touched (see above), and a ref that passed then still has to be
+# rejected rather than silently accepted if this script is edited later.
+if ! valid_ref "$SHELLTRIX_REF"; then
+    die "Invalid SHELLTRIX_REF: '$SHELLTRIX_REF' (a release tag like v1.0.1 or a commit SHA is expected)."
+fi
 
 install_shelltrix() {
     # NOTE PyPI publishing: replace the pinned git+https with
