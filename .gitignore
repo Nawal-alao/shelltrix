@@ -1,27 +1,27 @@
-# Environnement Python
+# Python environment
 .venv/
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Build et paquets
+# Build and packages
 build/
 dist/
 *.egg-info/
 *.egg
 wheels/
 
-# Données sensibles / locales (jamais de token ni de clé en clair)
+# Sensitive / local data (never a token nor a key in plaintext)
 .env
 *.env
 !*.env.example
 credentials.json
 recovery.json
 
-# Éditeurs / OS
+# Editors / OS
 .vscode/
 .idea/
 .DS_Store
 
-# Artefacts de dev / captures d'écran
+# Dev artifacts / screenshots
 *.svg

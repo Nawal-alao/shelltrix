@@ -1,94 +1,94 @@
-# Notes techniques (refactor 13 étapes)
+# Technical notes (13-step refactor)
 
-Documentation des adaptations *mécaniques* nécessaires au découpage de
-`app.py`, sans changement de comportement. Si un bug est repéré en passant,
-il est noté ici et traité séparément — jamais corrigé pendant le refactor.
+Documentation of the *mechanical* adaptations needed to split up
+`app.py`, with no behaviour change. If a bug is spotted along the way,
+it is noted here and handled separately — never fixed during the refactor.
 
-## Adaptations imposées par le découpage
+## Adaptations imposed by the split
 
-### 1. Couleurs markup `ACCENT` / `DANGER` (globals mutables)
-À l'origine : `app.py` définit `ACCENT` et `DANGER`, rebondus à la volée par
-`_apply_theme_globals()` (appel à l'import du module, dans `ShelltrixApp.__init__`
-et à chaque `cycle_theme`). Leurs consommateurs vivaient dans le même module :
-une réaffectation `global ACCENT` était donc vue partout.
+### 1. Markup colors `ACCENT` / `DANGER` (mutable globals)
+Originally: `app.py` defines `ACCENT` and `DANGER`, bounced on the fly by
+`_apply_theme_globals()` (called at module import, in `ShelltrixApp.__init__`
+and on every `cycle_theme`). Their consumers lived in the same module:
+a `global ACCENT` reassignment was therefore seen everywhere.
 
-Après extraction, les consommateurs (ChatScreen, RecoveryDialog, SasDialog,
-InviteDialog) sont dans d'autres modules. Un `from ..app import ACCENT` par
-module serait *statique* : la réaffectation dans `app.py` ne se propagerait
-plus (bug de thème non rafraîchi). La structure interdit les imports
-circulaires `screens|dialogs → app`.
+After extraction, the consumers (ChatScreen, RecoveryDialog, SasDialog,
+InviteDialog) are in other modules. A `from ..app import ACCENT` per module
+would be *static*: the reassignment in `app.py` would no longer propagate
+(stale theme bug). The structure forbids circular imports
+`screens|dialogs → app`.
 
-⇒ Adaptation : ces call sites lisent désormais la valeur vivante
-`themes.accent()` / `themes.danger()` au moment du rendu. C'est strictement
-équivalent à l'ancien `ACCENT` : l'invariant `ACCENT == themes.accent()`
-(et idem `DANGER`) est maintenu par `_apply_theme_globals()` à l'import et à
-chaque bascule de thème → aucune valeur observable ne change.
+⇒ Adaptation: these call sites now read the live value
+`themes.accent()` / `themes.danger()` at render time. This is strictly
+equivalent to the old `ACCENT`: the invariant `ACCENT == themes.accent()`
+(same for `DANGER`) is maintained by `_apply_theme_globals()` at import and on
+every theme switch → no observable value changes.
 
-`ACCENT` / `DANGER` / `_apply_theme_globals()` restent dans `app.py` : ils
-n'ont plus de consommateur mais `ShelltrixApp` continue de les maintenir.
+`ACCENT` / `DANGER` / `_apply_theme_globals()` stay in `app.py`: they have
+no consumer left but `ShelltrixApp` keeps maintaining them.
 
-### 2. `_URL_RE` (regex d'URL) — retiré de la liste initiale
-`_URL_RE` est utilisé par `ChatScreen._handle_incoming_message`. Il n'est pas
-dans la liste des fonctions de `formatting.py`, mais c'est une constante de
-formatage de texte et `chat.py` ne peut pas l'importer depuis `app.py`
-(circulaire). Il réside donc dans `formatting.py`.
+### 2. `_URL_RE` (URL regex) — removed from the initial list
+`_URL_RE` is used by `ChatScreen._handle_incoming_message`. It is not
+in the list of `formatting.py` functions, but it is a text formatting
+constant and `chat.py` cannot import it from `app.py`
+(circular). It therefore lives in `formatting.py`.
 
 ### 3. Sorting `SENDER_COLORS` / `SYNC_LABELS`
-- `SENDER_COLORS` : utilisé uniquement par `_sender_color` → `formatting.py`.
-- `SYNC_LABELS` : utilisé uniquement par `ChatScreen` → `screens/chat.py`.
+- `SENDER_COLORS`: used only by `_sender_color` → `formatting.py`.
+- `SYNC_LABELS`: used only by `ChatScreen` → `screens/chat.py`.
 
-### 4. Imports différés pendant la migration (résolus)
-Pendant le découpage, `CommandPalette`/`StoreUnlockDialog` appelaient
-`ChatScreen`, `JoinRoomDialog`, `RecoveryDialog`, `LoginScreen` encore dans
-`app.py` ; ils utilisaient des imports dans le corps de fonction pour éviter
-tout retour vers `app.py`. Une fois chaque module extrait (étapes 5, 6, 11,
-12), tous ces imports sont repassés en haut de module. `app.py` ne référence
-que des modules "aval" (screens/, dialogs/, config/, matrix_client/) —
-aucun cycle.
+### 4. Deferred imports during the migration (resolved)
+During the split, `CommandPalette`/`StoreUnlockDialog` called
+`ChatScreen`, `JoinRoomDialog`, `RecoveryDialog`, `LoginScreen` while they were
+still in `app.py`; they used imports inside the function body to avoid any
+return to `app.py`. Once each module was extracted (steps 5, 6, 11,
+12), all these imports were moved back to the top of the module. `app.py`
+only references "downstream" modules (screens/, dialogs/, config/,
+matrix_client/) — no cycle.
 
 ### 5. `MatuiApp` → `ShelltrixApp`
-Le nom de la classe a suivi le projet : les sections 1 et 3 parlaient encore
-de `MatuiApp`, la classe s'appelle `ShelltrixApp` (`src/shelltrix/app.py`).
-Aucun code ne référence l'ancien nom.
+The class name followed the project: sections 1 and 3 still spoke
+of `MatuiApp`, while the class is called `ShelltrixApp`
+(`src/shelltrix/app.py`). No code references the old name.
 
-### 6. Timeline : `RichLog` → widgets
-Ce n'est pas une adaptation mécanique, c'est un changement de modèle de rendu
-qu'il a fallu faire pour les messages longs, les réponses et les réactions :
-un `RichLog` n'affiche que du texte déjà rendu, donc il ne peut ni se
-replier, ni porter une reaction par message, ni devenir la cible d'un
+### 6. Timeline: `RichLog` → widgets
+This is not a mechanical adaptation, it is a rendering model change
+that had to be made for long messages, replies and reactions:
+a `RichLog` only displays already-rendered text, so it can neither
+fold, nor carry a reaction per message, nor become the target of a
 `scroll_to_widget`.
 
-La timeline est désormais un `VerticalScroll` (`#timeline`) rempli de
-`MessageView` (`widgets.py`), un widget par message. Conséquences à
-connaître :
+The timeline is now a `VerticalScroll` (`#timeline`) filled with
+`MessageView` (`widgets.py`), one widget per message. Consequences to
+know about:
 
-- toute recherche d'un élément de la timeline passe par
-  `query_one(..., MessageView)`, pas par une ligne de texte ;
-- `RichLog` n'est plus importé dans `screens/chat.py` ;
-- le repli est mesuré sur les lignes *rendues* (largeur réelle du panneau,
-  markup retiré), pas sur les `\n` de la source — d'où `timeline_width` et
-  son repli `_FALLBACK_TIMELINE_WIDTH` avant le premier layout ;
-- un message monté n'est pas encore dimensionné : les scrolls précis
-  (`open_message`, repositionnement après un prepend d'historique) passent par
+- any lookup of a timeline element goes through
+  `query_one(..., MessageView)`, not a text line;
+- `RichLog` is no longer imported in `screens/chat.py`;
+- the fallback is measured on the *rendered* lines (actual panel width,
+  markup stripped), not on the source `\n` — hence `timeline_width` and
+  its `_FALLBACK_TIMELINE_WIDTH` fallback before the first layout;
+- a mounted message is not sized yet: precise scrolls
+  (`open_message`, repositioning after a history prepend) go through
   `call_after_refresh`.
 
-## Structure finale (src/shelltrix/)
-- `app.py` : `ShelltrixApp`, `_apply_theme_globals`, globals `ACCENT`/`DANGER`
-  (maintenus mais sans consommateur), `run()`.
-- `config.py` : chemins, préférences, chiffrement du store (Fernet), clé de
-  récupération, marqueur de premier lancement.
-- `accounts.py` : multi-comptes (`accounts.json` + tokens dans le keyring).
-- `matrix_client.py` : wrapper `matrix-nio` (login, sync, envoi, SAS,
-  réactions, upload) et le premier sync non bloquant.
-- `cache.py` : cache SQLite local des messages, indexé par compte et salon.
-- `formatting.py` : blocs de timeline, dates, réponses, réactions, markdown,
-  regex URL.
-- `sidebar.py` : panneaux ROOM / SESSION, cadres et branches d'arbre.
-- `widgets.py` : `MessageView` (corps repliable, réactions), bouton d'envoi.
-- `themes.py`, `image_renderer.py`, `notifications.py` : tokens de couleur,
-  rendu d'images, notifications desktop.
+## Final structure (src/shelltrix/)
+- `app.py`: `ShelltrixApp`, `_apply_theme_globals`, `ACCENT`/`DANGER` globals
+  (maintained but with no consumer), `run()`.
+- `config.py`: paths, preferences, store encryption (Fernet), recovery key,
+  first-run marker.
+- `accounts.py`: multi-account (`accounts.json` + tokens in the keyring).
+- `matrix_client.py`: `matrix-nio` wrapper (login, sync, send, SAS,
+  reactions, upload) and the non-blocking first sync.
+- `cache.py`: local SQLite cache of the messages, indexed by account and room.
+- `formatting.py`: timeline blocks, dates, replies, reactions, markdown,
+  URL regex.
+- `sidebar.py`: ROOM / SESSION panels, frames and tree branches.
+- `widgets.py`: `MessageView` (foldable body, reactions), send button.
+- `themes.py`, `image_renderer.py`, `notifications.py`: color tokens,
+  image rendering, desktop notifications.
 - `screens/{login,chat,splash,account_picker}.py`, `dialogs/{command_palette,
-  join_room,search,recovery,store_unlock,sas,invite}.py` : écrans et dialogues.
+  join_room,search,recovery,store_unlock,sas,invite}.py`: screens and dialogs.
 
-## Bugs repérés pendant le refactor (à traiter séparément)
-- (aucun pour l'instant)
+## Bugs spotted during the refactor (to be handled separately)
+- (none for now)
