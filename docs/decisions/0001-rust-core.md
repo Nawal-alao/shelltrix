@@ -120,7 +120,8 @@ Migrated so far, each step verified:
 | Packaging question | resolved, abi3 wheel proven in CI |
 | Seam (`shelltrix._core`), backend selection, parity tests | done, 260 tests |
 | `/sync` parsing → timeline messages | done, 30x measured |
-| Network + event loop | **not started** |
+| Feasibility against a real homeserver (step 3.0) | done, loop closed |
+| Network + event loop (step 3.1–3.2) | **not started** |
 | E2EE (olm store, key management) | **not started** |
 | Rust as the default backend | not started |
 
@@ -128,6 +129,47 @@ The seam is deliberately **not** wired into `matrix_client.py`: the client
 consumes events through matrix-nio callbacks, while a matrix-sdk core emits a
 stream. Bridging the two is a change of architecture, not a substitution of a
 function call, and is left as one reviewed step.
+
+## Step 3.0 — feasibility spike (done 2026-10-02)
+
+Before migrating anything, the question "can a Rust client talk to a real
+homeserver at all" was answered with evidence rather than confidence:
+
+- Real Synapse 1.162.0, local, SQLite, on `localhost:8008`.
+- `matrix-sdk` 0.19.1, built with rustc 1.99 (its MSRV is 1.96).
+- A Rust client logged in, got a real device ID, ran `/sync`
+  (`200`, processed in ~18 ms), created a room, sent a message.
+- A second Rust client saw that room after its own sync.
+- The message was then read **out of Synapse's own SQLite database**, so the
+  proof does not depend on matrix-sdk being correct about itself.
+
+The loop is closed. The migration is feasible.
+
+### What the spike changed in the plan
+
+Three findings that the design has to respect:
+
+1. **`Client::sync()` never returns.** It is the client's main loop, by
+   design (`sync_with_callback(..., |_| LoopCtrl::Continue)`). So the transport
+   cannot be "call sync and get events": it must run the loop as a background
+   task and expose an event stream to Python. This is the single biggest
+   difference from matrix-nio's callback model, and it confirms decision 3 was
+   the right call — the facade hides it.
+
+2. **matrix-sdk owns a Tokio runtime; the extension is embedded in
+   asyncio.** A PyO3 module must never construct a runtime inside the Python
+   thread. The core will run Tokio on a dedicated thread, and every call from
+   Python will enter it with a guard. This is decided here, before any code
+   exists, because getting it wrong deadlocks the UI.
+
+3. **matrix-sdk 0.19 is pre-1.0 and its API moves.** Login is
+   `client.matrix_auth().login_username(...)`, room creation takes a raw
+   `create_room::v3::Request`, and `send_text` no longer exists. The seam is
+   therefore more valuable than it looked: it is what absorbs this churn.
+
+Recipe to reproduce: a Synapse venv (`matrix-synapse`, Python 3.12, SQLite),
+`register_new_matrix_user -c homeserver.yaml -a`, then a cargo bin depending
+on `matrix-sdk = "0.19"`.
 
 ## Consequences
 
