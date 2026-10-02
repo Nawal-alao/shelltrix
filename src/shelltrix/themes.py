@@ -159,6 +159,10 @@ def section() -> str:
     return spec().section
 
 
+def border() -> str:
+    return spec().border
+
+
 def register_themes(app: App) -> None:
     """Enregistre tous les thèmes et expose nos variables CSS."""
     for s in THEMES.values():

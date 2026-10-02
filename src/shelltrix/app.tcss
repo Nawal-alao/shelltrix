@@ -293,12 +293,14 @@ ToastRack {
     border-bottom: solid $surface;
 }
 
-/* Titre de section : petit, discret, aligné sur la grille des items. */
+/* Titre de section : cadre ┌─┐ / │ ROOMS │ / └─┐ dessiné en markup
+   (voir sidebar.box_header), d'où une hauteur de 3 lignes. Le contenu
+   reste aligné sur la grille des items (1 col de padding de chaque
+   côté), le cadre arrive donc au bord du panneau. */
 #room-list-header {
-    height: 1;
+    height: 3;
     content-align: left middle;
     color: $muted;
-    text-style: bold;
     padding: 0 1;
 }
 
@@ -309,8 +311,9 @@ ToastRack {
     padding: 0;
 }
 
-/* Chaque room tient une ligne compacte : nom (1fr, tronqué par "…") +
-   badge non-lu calé à droite, sans fond ni gros bloc. */
+/* Chaque room tient une ligne compacte : branche d'arbre (├─) + nom (1fr,
+   tronqué par "…") + badge non-lu calé à droite, sans fond ni gros
+   bloc. */
 #room-list ListItem {
     height: 1;
     padding: 0 1;
@@ -322,6 +325,14 @@ ToastRack {
 #room-list .room-row {
     width: 1fr;
     height: 1;
+}
+
+/* La branche est une colonne fixe : le nom garde tout le reste. */
+#room-list .room-stem {
+    width: auto;
+    margin-right: 1;
+    color: $muted;
+    text-wrap: nowrap;
 }
 
 #room-list .room-name {
@@ -498,16 +509,24 @@ SplashScreen {
     color: $text;
 }
 
+/* Panneaux ROOM / SESSION : lignes « ├─ … » (voir sidebar.tree_block).
+   Chaque valeur tient sur une seule ligne du panneau — trop longue, elle
+   est tronquée avec « … » plutôt que repliée, sinon sa suite se
+   retrouverait sous la branche, sans repère de rattachement. */
 #sidebar > Static {
     width: 100%;
     height: auto;
     padding-bottom: 0;
     color: $text;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
 }
 
+/* SESSION est suivi d'un simple interligne (padding-top) : son cadre
+   ┌───┐ joue déjà le rôle de séparateur entre les deux panneaux. */
 #sb-session {
     padding-top: 1;
-    border-top: solid $surface;
 }
 
 /* -- Barre de saisie ------------------------------------------------- */

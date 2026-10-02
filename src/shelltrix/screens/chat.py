@@ -48,7 +48,12 @@ from ..formatting import (
 from ..image_renderer import format_image_message, is_image_message, render_image
 from ..matrix_client import ShelltrixClient
 from ..notifications import notify
-from ..sidebar import _sidebar_room_markup, _sidebar_session_markup
+from ..sidebar import (
+    _sidebar_room_markup,
+    _sidebar_session_markup,
+    box_header,
+    branch,
+)
 from ..widgets import COLLAPSED_LINES, MessageView, _SendButton
 from .login import LoginScreen
 
@@ -146,6 +151,14 @@ class ChatScreen(Screen):
         # Dernière ligne affichée par salon (indice dans `message_log`) : sert
         # à savoir s'il faut scroll_end lors d'un re-rendu.
         self._at_bottom: dict[str, bool] = {}
+        # Largeurs de sidebar retenues au dernier resize : les cadres de
+        # titre (┌───┐) sont dessinés en markup, il faut donc connaître la
+        # largeur disponible pour les redessiner à bonne taille.
+        self._left_width = 30
+        self._right_width = 30
+        # Dernier markup écrit dans le cadre « ROOMS » : évite de
+        # repeindre le widget à chaque tick alors qu'il n'a pas changé.
+        self._room_header_markup: str | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="top-bar"):
@@ -155,7 +168,7 @@ class ChatScreen(Screen):
         with Horizontal(id="main"):
             with Vertical(id="room-panel"):
                 yield Static("◆ shelltrix", id="brand-sidebar")
-                yield Static("ROOMS", id="room-list-header")
+                yield Static("", id="room-list-header")
                 yield ListView(id="room-list")
             with Vertical(id="chat-area"):
                 yield VerticalScroll(id="timeline")
@@ -259,6 +272,7 @@ class ChatScreen(Screen):
             color = accent
         self.query_one("#sync-status", Static).update(f"[{color}]●[/{color}] {label}")
         self.query_one("#clock", Static).update(time.strftime("%H:%M"))
+        self._refresh_room_header()
         self._refresh_sidebar()
         self._purge_typing()
 
@@ -311,14 +325,37 @@ class ChatScreen(Screen):
         widget.update(f"[dim]{escape(text)}[/dim]")
         widget.styles.display = "block"
 
+    def _panel_content_width(self, selector: str, fallback: int) -> int:
+        """Colonnes de texte disponibles dans un panneau de sidebar.
+
+        Les cadres de titre sont dessinés en markup : ils doivent suivre la
+        largeur RÉELLE de la zone de contenu (padding et bordures du
+        panneau déduits par le layout), sinon la bordure droite du cadre
+        déborde sur celle du panneau. Le repli sert avant le premier
+        passage de layout, quand la taille n'est pas encore connue.
+        """
+        try:
+            width = self.query_one(selector).content_size.width
+        except NoMatches:
+            return fallback
+        return width if width > 4 else fallback
+
+    def _redraw_frames(self) -> None:
+        """Redessine les cadres des deux sidebars (après le layout)."""
+        self._refresh_room_header()
+        self._refresh_sidebar()
+
     def _refresh_sidebar(self) -> None:
         """Re-synthetise les deux panneaux contextuels (Room / Session)."""
         room = None
         if self.active_room_id:
             room = self.client.rooms().get(self.active_room_id)
         own_id = getattr(getattr(self.client, "client", None), "user_id", None) or ""
+        # Les deux cadres partagent la largeur de #sb-room : sans bordure
+        # propre, SESSION a exactement la même place disponible.
+        inner = self._panel_content_width("#sb-room", self._right_width - 2)
         self.query_one("#sb-room", Static).update(
-            _sidebar_room_markup(room, own_id)
+            _sidebar_room_markup(room, own_id, inner)
         )
         nb = getattr(self.client.client, "next_batch", None)
         nb = nb if isinstance(nb, str) else None
@@ -328,8 +365,24 @@ class ChatScreen(Screen):
                 self._last_nb = nb
                 self._nb_time = now
         self.query_one("#sb-session", Static).update(
-            _sidebar_session_markup(self.client.sync_state, nb, self._nb_time, now)
+            _sidebar_session_markup(
+                self.client.sync_state, nb, self._nb_time, now, inner
+            )
         )
+
+    def _refresh_room_header(self) -> None:
+        """Redessine le cadre du titre « ROOMS » à la largeur courante.
+
+        Appelé à chaque tick : les couleurs du cadre sont figées dans le
+        markup, il faut donc le régénérer pour suivre `/theme`. Le cache
+        évite le repeint quand rien n'a changé.
+        """
+        inner = self._panel_content_width("#room-list-header", self._left_width - 2)
+        markup = "\n".join(box_header("ROOMS", inner))
+        if markup == self._room_header_markup:
+            return
+        self._room_header_markup = markup
+        self.query_one("#room-list-header", Static).update(markup)
 
     def action_toggle_sidebar(self) -> None:
         self.query_one("#sidebar").display = not self.query_one("#sidebar").display
@@ -342,6 +395,7 @@ class ChatScreen(Screen):
     def _refresh_room_list(self) -> None:
         room_list = self.query_one("#room-list", ListView)
         room_list.clear()
+        self._refresh_room_header()
         accent = themes.accent()
         ordered = sorted(
             self.client.rooms().items(),
@@ -350,7 +404,7 @@ class ChatScreen(Screen):
                 (kv[1].display_name or kv[0]).lower(),
             ),
         )
-        for room_id, room in ordered:
+        for index, (room_id, room) in enumerate(ordered):
             name = room.display_name or room_id
             unread = self.unread.get(room_id, 0)
             mentions = self.mentions.get(room_id, 0) > 0
@@ -369,10 +423,12 @@ class ChatScreen(Screen):
                 badge = Label(self._unread_badge(unread), classes="room-badge")
             else:
                 badge = None
+            # Branche d'arbre : le dernier salon ferme la branche (└─).
+            stem = Label(branch(index == len(ordered) - 1), classes="room-stem")
             if badge is not None:
-                row = Horizontal(name_label, badge, classes="room-row")
+                row = Horizontal(stem, name_label, badge, classes="room-row")
             else:
-                row = Horizontal(name_label, classes="room-row")
+                row = Horizontal(stem, name_label, classes="room-row")
             item = ListItem(row)
             item.data_room_id = room_id  # type: ignore[attr-defined]
             if is_active:
@@ -783,11 +839,16 @@ class ChatScreen(Screen):
             left = right = 22
         else:
             left = right = 20
+        self._left_width = left
+        self._right_width = right
         try:
             self.query_one("#room-panel").styles.width = left
             sb = self.query_one("#sidebar")
             sb.styles.width = right
             sb.display = sb.display if w >= 100 else False
+            # Les cadres de titre sont du texte : ils suivent la largeur,
+            # mesurée une fois le layout passé (d'où call_after_refresh).
+            self.call_after_refresh(self._redraw_frames)
         except Exception:
             pass
 
