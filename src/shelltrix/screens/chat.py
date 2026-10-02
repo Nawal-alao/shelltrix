@@ -163,9 +163,15 @@ class ChatScreen(Screen):
         self.client.on_invite = self._show_invite_dialog
         self.client.on_sas_request = self._show_sas_dialog
         self.client.on_send_error = self._on_send_error
+        # Branché AVANT start() : le premier sync part en tâche de fond, il
+        # faut donc que le callback soit en place pour ne pas rater la
+        # publication de la liste des salons.
+        self.client.on_first_sync = self._on_first_sync
         self._status_timer = self.set_interval(1.0, self._tick_status)
-        self._tick_status()  # "syncing…" during the first sync
-        await self.client.start()
+        self._tick_status()  # "syncing…" pendant le premier sync
+        # start() est instantané (le sync part en fond) : l'écran s'affiche
+        # tout de suite, la liste se peuple dès que la réponse arrive.
+        self.client.start()
         self._refresh_room_list()
         timeline = self.query_one("#timeline", VerticalScroll)
         timeline.mount(
@@ -173,6 +179,13 @@ class ChatScreen(Screen):
                 "\n[dim]· · ·  Pick a room from the list to start chatting  · · ·[/dim]"
             )
         )
+
+    async def _on_first_sync(self) -> None:
+        """Premier sync réussi : la liste des salons est enfin peuplée."""
+        if not self.is_mounted:
+            return
+        self._refresh_room_list()
+        self._refresh_sidebar()
 
     async def on_unmount(self) -> None:
         """Arrête le timer de statut et ferme le client proprement : la

@@ -42,6 +42,8 @@ InviteHandler = Callable[[str, MatrixRoom, str], Awaitable[None]]
 SasRequestHandler = Callable[[str, str, str, list[tuple[str, str]]], Awaitable[None]]
 # Échec d'envoi (ex. appareils non vérifiés dans un salon chiffré) : (room_id, message)
 SendErrorHandler = Callable[[str, str], Awaitable[None]]
+# Premier sync terminé : l'UI peut rafraîchir sa liste de salons.
+FirstSyncHandler = Callable[[], Awaitable[None]]
 
 
 @dataclass
@@ -55,6 +57,12 @@ class ShelltrixClient:
     on_invite: InviteHandler | None = None
     on_sas_request: SasRequestHandler | None = None
     on_send_error: SendErrorHandler | None = None
+    # Premier sync terminé : l'UI rafraîchit alors sa liste de salons (les
+    # salons n'arrivent qu'avec la réponse du sync, pas au montage).
+    on_first_sync: FirstSyncHandler | None = None
+    # Vrai dès que le premier sync a abouti (l'UI montée plus tard peut lire
+    # l'état au lieu d'attendre le callback).
+    first_sync_done: bool = field(init=False, default=False)
     # État exposé à l'UI (header) :
     #   connecting → syncing → online | offline / reconnecting (backoff).
     sync_state: str = field(init=False, default="connecting")
@@ -122,16 +130,30 @@ class ShelltrixClient:
         self.client.load_store()
         self._store_loaded = True
 
-    async def start(self) -> None:
-        """Charge les clés de chiffrement locales et démarre la sync loop."""
+    def start(self) -> None:
+        """Charge les clés de chiffrement locales et démarre la sync loop.
+
+        Ne bloque JAMAIS : le premier sync (complet, pour peupler la liste des
+        salons) part en tâche de fond et l'UI s'affiche tout de suite. Le
+        premier sync mesuré sur matrix.org prenait ~10 s ; l'attendre ici
+        retardait d'autant le premier affichage. L'UI suit l'avancement via
+        `sync_state` et se rafraîchit sur `on_first_sync`."""
         self.load_local_store()
-        # Un premier sync complet avant de tourner en continu, pour avoir
-        # tout de suite la liste des salons peuplée.
         self.sync_state = "syncing"
-        await self.client.sync(timeout=30000, full_state=True)
-        self.sync_state = "online"
-        self._ever_connected = True
         self._sync_task = asyncio.create_task(self._run_sync_forever())
+
+    async def _fire_first_sync(self) -> None:
+        """Notifie l'UI que le premier sync a réussi (liste des salons pleine).
+
+        Isolé de la boucle de sync : une erreur de rafraîchissement côté UI ne
+        doit pas être confondue avec une panne réseau (backoff + statut
+        «offline»)."""
+        if self.on_first_sync is None:
+            return
+        try:
+            await self.on_first_sync()
+        except Exception:
+            pass
 
     async def _run_sync_forever(self) -> None:
         """Boucle de sync en tâche de fond, avec reconnexion automatique.
@@ -145,6 +167,7 @@ class ShelltrixClient:
         next_batch = getattr(self.client, "next_batch", None)
         delay = 1.0
         MAX_BACKOFF = 30.0
+        first_sync_done = False
         while True:
             try:
                 self.sync_state = "syncing"
@@ -155,6 +178,10 @@ class ShelltrixClient:
                 next_batch = getattr(self.client, "next_batch", None)
                 self.sync_state = "online"
                 self._ever_connected = True
+                if not first_sync_done:
+                    first_sync_done = True
+                    self.first_sync_done = True
+                    await self._fire_first_sync()
                 delay = 1.0  # succès : on remet l'horloge de backoff à zéro
                 # Laisse le champ libre à l'event loop entre deux itérations :
                 # évite une boucle serrée si le serveur répond instantanément.
