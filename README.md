@@ -242,8 +242,8 @@ theme variables — add a new theme by appending an entry to
 
 1. Sixel / Kitty graphics protocol for inline images (today: truecolor
    half-blocks)
-2. Cross-signing device verification — blocked by `matrix-nio`, tracked in
-   [MIGRATION_RUST.md](MIGRATION_RUST.md)
+2. Cross-signing device verification — blocked by `matrix-nio`. Direction:
+   move the core to `matrix-sdk` (Rust) behind the existing Textual UI
 3. Message editing and threads
 
 ---
