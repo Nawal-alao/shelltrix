@@ -6,7 +6,7 @@ respecte [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
-En préparation de la 1.0.0.
+## [1.0.0] - 2026-10-02
 
 ### Added
 - **Réponses** : la commande `/reply` répond au dernier message reçu dans le
