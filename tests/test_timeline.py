@@ -1,8 +1,8 @@
 """Tests pour le rendu de la timeline conversationnelle (groupage par
-expéditeur, séparateurs temporels et de date).
+expéditeur, séparateurs temporels et de date, réponses, réactions).
 
-Cible la logique pure `format_timeline_blocks` / `format_timeline_entries` de
-`shelltrix.formatting`, sans état Textual.
+Cible la logique pure de `shelltrix.formatting` (`format_timeline_blocks` /
+`format_timeline_entries`, replies, dates), sans état Textual.
 """
 
 from __future__ import annotations
@@ -21,6 +21,10 @@ from shelltrix.formatting import (
     highlight_mentions,
     interval_time_gap,
     needs_date_separator,
+    reply_fallback,
+    reply_quote_line,
+    reply_target_of,
+    strip_reply_fallback,
     weekday_name,
 )
 
@@ -272,6 +276,68 @@ class TestMessageBlocks:
                 expected += ["", f"[dim]HH:MM {'─' * 36}[/dim]"]
             expected += b.lines
         assert lines == expected
+
+
+class TestReplies:
+    def test_quote_absent_without_reply(self) -> None:
+        assert reply_quote_line(entry("@a:hs", "coucou")) == ""
+
+    def test_quote_names_the_cited_person(self) -> None:
+        e = entry("@a:hs", "coucou")
+        e.reply_to_name = "Tim"
+        assert "Tim" in reply_quote_line(e)
+        assert "┌─" in reply_quote_line(e)
+
+    def test_quote_precedes_body(self) -> None:
+        e = entry("@a:hs", "coucou")
+        e.reply_to_name = "Tim"
+        blocks, _ = format_timeline_blocks([e], TimelineContext(), header_for=head)
+        lines = blocks[0].lines
+        assert "Tim" in lines[-2], "la citation doit précéder le corps"
+        assert lines[-1].endswith("coucou")
+
+    def test_reply_name_is_escaped(self) -> None:
+        e = entry("@a:hs", "x")
+        e.reply_to_name = "[bold]piège"
+        out = reply_quote_line(e)
+        # Le crochet doit être échappé (Rich: `\[`), sinon un display_name
+        # malveillant s'injecterait en balise et maquillerait le message.
+        assert "\\[bold]piège" in out
+        # aucune balise NON échappée ne doit subsister
+        assert "[bold]" not in out.replace("\\[", "")
+
+    def test_target_from_modern_form(self) -> None:
+        content = {
+            "m.relates_to": {"rel_type": "m.in_reply_to", "event_id": "$abc"}
+        }
+        assert reply_target_of(content) == "$abc"
+
+    def test_target_from_legacy_form(self) -> None:
+        assert reply_target_of({"m.in_reply_to": {"event_id": "$old"}}) == "$old"
+
+    def test_no_target_when_plain_message(self) -> None:
+        assert reply_target_of({"body": "coucou", "msgtype": "m.text"}) == ""
+
+    def test_annotation_is_not_a_reply(self) -> None:
+        content = {
+            "m.relates_to": {"rel_type": "m.annotation", "event_id": "$x", "key": "👍"}
+        }
+        assert reply_target_of(content) == ""
+
+    def test_fallback_round_trip(self) -> None:
+        """Ce qu'on envoie doit pouvoir être retiré à la réception."""
+        sent = reply_fallback("je suis d'accord", "@tim:hs")
+        assert sent == "<@tim:hs> je suis d'accord"
+        assert strip_reply_fallback(sent, "@tim:hs") == "je suis d'accord"
+
+    def test_fallback_kept_for_other_author(self) -> None:
+        """Un préfixe d'un AUTRE auteur n'est pas un repli : on n'y touche pas."""
+        body = "<@alice:hs> bonjour"
+        assert strip_reply_fallback(body, "@tim:hs") == body
+
+    def test_fallback_without_author(self) -> None:
+        assert reply_fallback("texte", "") == "texte"
+        assert strip_reply_fallback("texte", "") == "texte"
 
 
 class TestDateSeparators:

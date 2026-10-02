@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Callable
@@ -57,6 +58,12 @@ class TimelineEntry:
     is_image: bool = False
     image_hint: str = ""  # ex. nom de fichier pour le placeholder
     timestamp: str = field(default="")  # "HH:MM" pré-calculé
+    # Réponse à un autre message (m.in_reply_to). `reply_to_name` est résolu
+    # à la réception via l'index event_id → nom ; vide si le message cité est
+    # inconnu (hors historique), auquel cas aucune ligne de citation n'est
+    # rendue plutôt que d'afficher un nom deviné.
+    reply_to_event_id: str = ""
+    reply_to_name: str = ""
 
 
 @dataclass
@@ -119,6 +126,20 @@ def body_mentions_user(body: str, user_id: str) -> bool:
         if token in body:
             return True
     return False
+
+
+def reply_quote_line(entry: TimelineEntry) -> str:
+    """Citation line « ┌─ replying to X » (empty when there is no reply).
+
+    La citation précède le corps : c'est l'ordre qui rend le contexte lisible
+    (Element, Discord). `┌─` indique visuellement une ligne suspendue
+    AU-DESSUS du message, ce qui correspond à sa position.
+
+    Le nom est échappé : il vient du réseau (display_name arbitraire).
+    """
+    if not entry.reply_to_name:
+        return ""
+    return f"[dim]┌─ replying to {escape(entry.reply_to_name)}[/dim]"
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +224,62 @@ def needs_date_separator(prev_ms: int, curr_ms: int) -> bool:
     return prev != curr
 
 
+# ---------------------------------------------------------------------------
+# Réponses (m.in_reply_to)
+# ---------------------------------------------------------------------------
+
+
+def reply_target_of(content: Mapping[str, object]) -> str:
+    """Event_id du message cité par un `m.room.message`, ou "" .
+
+    Deux formes coexistent dans la spec Matrix :
+      - forme moderne : `m.relates_to.rel_type == "m.in_reply_to"` ;
+      - forme ancienne : `m.in_reply_to.event_id`.
+    On lit les deux. `content` est le dict `content` de l'événement brut —
+    fonction pure, testable sans réseau ni Textual.
+    """
+    relates = content.get("m.relates_to")
+    if (
+        isinstance(relates, Mapping)
+        and relates.get("rel_type") == "m.in_reply_to"
+    ):
+        event_id = relates.get("event_id")
+        if isinstance(event_id, str) and event_id:
+            return event_id
+    legacy = content.get("m.in_reply_to")
+    if isinstance(legacy, Mapping):
+        event_id = legacy.get("event_id")
+        if isinstance(event_id, str) and event_id:
+            return event_id
+    return ""
+
+
+def reply_fallback(body: str, author: str) -> str:
+    """Préfixe de repli qu'exige la spec pour une réponse.
+
+    Un client qui ne comprend pas `m.in_reply_to` n'affiche que le corps du
+    message : sans ce préfixe, la réponse perd tout contexte. La spec impose
+    `<@user_id> corps d'origine`. `author` est l'identifiant complet (@a:hs).
+    """
+    if not author:
+        return body
+    return f"<{author}> {body}"
+
+
+def strip_reply_fallback(body: str, author: str) -> str:
+    """Retire le préfixe de repli qu'on a soi-même posé à l'envoi.
+
+    Sans ce retrait, notre propre timeline afficherait le message d'origine
+    collé au texte de la réponse (le serveur l'y a mis pour les clients
+    anciens). On ne retire que le préfixe EXACT qu'on a construit, donc un
+    message qui commence légitimement par `<@alice:hs> …` n'est pas amputé
+    d'un texte qui n'était pas un repli.
+    """
+    if not author:
+        return body
+    return body.removeprefix(f"<{author}> ")
+
+
 def format_timeline_blocks(
     entries: list[TimelineEntry],
     ctx: TimelineContext,
@@ -239,6 +316,9 @@ def format_timeline_blocks(
         lines: list[str] = []
         if not continuation:
             lines.append(f"{indent}{header_for(e)}")
+        quote = reply_quote_line(e)
+        if quote:
+            lines.append(f"{indent}{quote}")
         lines.append(f"{indent}{e.body}")
         blocks.append(
             MessageBlock(
