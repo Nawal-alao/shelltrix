@@ -90,6 +90,65 @@ def login_and_sync(homeserver: str, user: str, password: str) -> SyncSummary:
     )
 
 
+@dataclass(frozen=True)
+class StreamEvent:
+    """One `m.room.message` from the running sync loop."""
+
+    room_id: str
+    sender: str
+    origin_server_ts: int
+    event_id: str
+    msgtype: str
+    body: str
+    mentions: bool
+
+
+def start_sync(homeserver: str, user: str, password: str) -> SyncSummary:
+    """Logs in and starts the sync loop in the background.
+
+    Returns as soon as the loop is running; the caller drains it with
+    [`next_event`]. This split is not a convenience: matrix-sdk's sync never
+    returns, so the loop has to be owned by the transport as a task.
+    """
+    if _rust is None:
+        raise RuntimeError("the Rust core is not installed (pip install shelltrix-core)")
+    summary = _rust.start_sync(homeserver, user, password)
+    return SyncSummary(
+        user_id=summary.user_id,
+        device_id=summary.device_id,
+        joined_rooms=tuple(summary.joined_rooms),
+    )
+
+
+def next_event(timeout_ms: int) -> StreamEvent | None:
+    """Waits up to `timeout_ms` for the next event, or None if none arrives.
+
+    None is the normal outcome in a quiet room, not a failure. A `RuntimeError`
+    means the loop itself ended — the message says why, so the UI can report it
+    instead of silently going quiet.
+    """
+    if _rust is None:
+        raise RuntimeError("the Rust core is not installed (pip install shelltrix-core)")
+    event = _rust.next_event(timeout_ms)
+    if event is None:
+        return None
+    return StreamEvent(
+        room_id=event.room_id,
+        sender=event.sender,
+        origin_server_ts=event.origin_server_ts,
+        event_id=event.event_id,
+        msgtype=event.msgtype,
+        body=event.body,
+        mentions=event.mentions,
+    )
+
+
+def stop_sync() -> None:
+    """Stops the sync loop. Safe when none is running."""
+    if _rust is not None:
+        _rust.stop_sync()
+
+
 def rust_available() -> bool:
     """Whether the compiled core is importable on this machine."""
     return _rust is not None

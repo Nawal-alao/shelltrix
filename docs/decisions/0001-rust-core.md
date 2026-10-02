@@ -123,7 +123,7 @@ Migrated so far, each step verified:
 | Feasibility against a real homeserver (step 3.0) | done, loop closed |
 | Transport seam: UI free of nio (step 3.1) | done, enforced by a test |
 | Rust transport: login + one /sync from Python (step 3.2a) | done |
-| Rust sync loop as an event stream (step 3.2b) | **not started** |
+| Rust sync loop as an event stream (step 3.2b) | done, messages only |
 | E2EE (olm store, key management) | **not started** |
 | Rust as the default backend | not started |
 
@@ -214,9 +214,43 @@ held again, the symptom would be a UI freeze blamed on something else.
 ~20 minutes on a cold cache. Both are costs worth knowing before widening the
 wheel matrix.
 
-What is left is step 3.2b: the sync loop as a queue Python drains, then
-`matrix_client.py`'s nio section replaced by a matrix-sdk transport emitting
-the dataclasses above.
+### Step 3.2b — the sync loop as a queue Python drains
+
+`_core.start_sync(homeserver, user, password)` logs in, spawns the sync loop as
+a Tokio task and returns immediately; `_core.next_event(timeout_ms)` hands the
+next event to Python; `_core.stop_sync()` tears it down. Three properties drove
+the shape, and each is a test rather than a comment:
+
+**No Rust→Python callbacks.** A callback would have to reacquire the GIL from
+whatever thread the sync loop runs on, so a slow repaint or a Textual widget
+touching Python state from the wrong thread could deadlock against the Python
+code waiting on `next_event`. A queue has no such cycle: Python pulls, Rust only
+pushes. The queue is unbounded so a busy room cannot silently drop messages —
+the UI is the only consumer and it drains continuously.
+
+**No lock held across an `await`.** `next_event` parks while waiting for an
+event, so holding the global stream lock there would block `stop_sync` until the
+wait expired — which is how quitting the app would hang. The channel has its own
+`tokio::sync::Mutex`, and the global lock is taken only long enough to clone an
+`Arc` out of it. `start_sync` likewise logs in before installing itself in the
+slot, so a slow homeserver cannot wedge a concurrent `stop`. Clippy caught this;
+it is now the shape of the code, with a test.
+
+**De-duplication at the queue, not the loop.** A resumed sync replays whatever
+arrived while disconnected. Filtering by event ID as events are enqueued — not
+where they are produced — means the guarantee holds for every producer and can
+be tested without a homeserver, since `Queue` no longer depends on `Client`.
+
+The queue is a separate type from the sync loop for the same reason: ordering,
+de-duplication, the timeout that reports a quiet room as `None` rather than an
+error, and the error a failed loop leaves behind are all verifiable offline.
+
+Not yet covered: only `m.room.message` is normalized. Images, reactions, typing,
+invites and SAS flows still have to cross the same seam before the transport can
+replace matrix-nio's section of `matrix_client.py`.
+
+What is left is replacing `matrix_client.py`'s nio section with a matrix-sdk
+transport emitting the dataclasses above — one reviewed step, still not taken.
 
 Recipe to reproduce: a Synapse venv (`matrix-synapse`, Python 3.12, SQLite),
 `register_new_matrix_user -c homeserver.yaml -a`, then a cargo bin depending

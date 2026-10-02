@@ -15,7 +15,15 @@
 //! deliberately — it is the slice with no secret state, so it can be
 //! migrated and validated without touching what must not break.
 
+// matrix-sdk's futures are deeply nested — each async layer is wrapped by
+// `tracing::instrument`, and the crypto path adds several more. Proving that
+// the sync loop's future is `Send`, which `tokio::spawn` requires, blows past
+// rustc's default recursion limit of 128. Raising it is the compiler's own
+// suggested fix; there is no restructuring on our side that avoids it.
+#![recursion_limit = "512"]
+
 pub mod runtime;
+pub mod stream;
 pub mod transport;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -47,6 +55,64 @@ impl SyncMessage {
             self.event_id, self.sender, self.origin_server_ts
         )
     }
+}
+
+/// The fields of an `m.room.message` event, without the room it came from.
+///
+/// Shared by `parse_sync_messages` (which walks a whole payload) and the sync
+/// stream (which is handed one event at a time), so both agree on what a
+/// message is by construction rather than by two implementations staying in
+/// sync by hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageFields {
+    pub sender: String,
+    pub origin_server_ts: u64,
+    pub event_id: String,
+    pub msgtype: String,
+    pub body: String,
+    pub mentions: bool,
+}
+
+/// Reads one `m.room.message` event, or None if it is not one.
+///
+/// Takes the raw event object, so both the `/sync` payload parser and the
+/// stream can hand over whatever shape they have.
+pub fn message_fields(event: &serde_json::Map<String, serde_json::Value>) -> Option<MessageFields> {
+    if event.get("type").and_then(|t| t.as_str()) != Some("m.room.message") {
+        return None;
+    }
+    let content = event.get("content")?;
+    let msgtype = content
+        .get("msgtype")
+        .and_then(|m| m.as_str())
+        .unwrap_or("m.text");
+    Some(MessageFields {
+        sender: event
+            .get("sender")
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_owned(),
+        origin_server_ts: event
+            .get("origin_server_ts")
+            .and_then(|t| t.as_u64())
+            .unwrap_or_default(),
+        event_id: event
+            .get("event_id")
+            .and_then(|e| e.as_str())
+            .unwrap_or_default()
+            .to_owned(),
+        msgtype: msgtype.to_owned(),
+        body: content
+            .get("body")
+            .and_then(|b| b.as_str())
+            .unwrap_or_default()
+            .to_owned(),
+        mentions: content
+            .get("m.mentions")
+            .and_then(|m| m.get("user_ids"))
+            .and_then(|u| u.as_array())
+            .is_some_and(|ids| !ids.is_empty()),
+    })
 }
 
 /// Extract every `m.room.message` of the joined rooms of a `/sync` payload.
@@ -83,43 +149,16 @@ fn parse_sync_messages(payload: &[u8]) -> PyResult<Vec<SyncMessage>> {
             continue;
         };
         for event in events {
-            if event.get("type").and_then(|t| t.as_str()) != Some("m.room.message") {
+            let Some(fields) = event.as_object().and_then(message_fields) else {
                 continue;
-            }
-            let content = match event.get("content") {
-                Some(content) => content,
-                None => continue,
             };
-            let msgtype = content
-                .get("msgtype")
-                .and_then(|m| m.as_str())
-                .unwrap_or("m.text");
             out.push(SyncMessage {
-                sender: event
-                    .get("sender")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or_default()
-                    .to_owned(),
-                origin_server_ts: event
-                    .get("origin_server_ts")
-                    .and_then(|t| t.as_u64())
-                    .unwrap_or_default(),
-                event_id: event
-                    .get("event_id")
-                    .and_then(|e| e.as_str())
-                    .unwrap_or_default()
-                    .to_owned(),
-                msgtype: msgtype.to_owned(),
-                body: content
-                    .get("body")
-                    .and_then(|b| b.as_str())
-                    .unwrap_or_default()
-                    .to_owned(),
-                mentions: content
-                    .get("m.mentions")
-                    .and_then(|m| m.get("user_ids"))
-                    .and_then(|u| u.as_array())
-                    .is_some_and(|ids| !ids.is_empty()),
+                sender: fields.sender,
+                origin_server_ts: fields.origin_server_ts,
+                event_id: fields.event_id,
+                msgtype: fields.msgtype,
+                body: fields.body,
+                mentions: fields.mentions,
             });
         }
     }
@@ -183,6 +222,82 @@ fn login_and_sync(
     })
 }
 
+/// Starts the sync loop in the background and returns immediately.
+///
+/// The caller then drains it with [`next_event`]. This split exists because
+/// matrix-sdk's sync never returns: a transport has to own the loop as a task
+/// and hand events over one at a time.
+///
+/// Errors:
+/// - `RuntimeError` if a sync is already running, the homeserver is
+///   unreachable, or the credentials are refused.
+#[pyfunction]
+#[pyo3(text_signature = "(homeserver: str, user: str, password: str) -> SyncSummary")]
+fn start_sync(
+    py: Python<'_>,
+    homeserver: &str,
+    user: &str,
+    password: &str,
+) -> PyResult<SyncSummary> {
+    let got = py.detach(|| runtime::block_on(stream::start(homeserver, user, password)));
+    let summary = got.map_err(PyRuntimeError::new_err)?;
+    Ok(SyncSummary {
+        user_id: summary.user_id,
+        device_id: summary.device_id,
+        joined_rooms: summary.joined_rooms,
+    })
+}
+
+/// Waits up to `timeout_ms` for the next event from the sync loop.
+///
+/// Returns `None` when the wait expires, which is the normal outcome in a quiet
+/// room and not an error. Raises `RuntimeError` if no sync is running, or if
+/// the loop ended — with the reason, so the UI can say why it went quiet.
+#[pyfunction]
+#[pyo3(text_signature = "(timeout_ms: int) -> StreamEvent | None")]
+fn next_event(py: Python<'_>, timeout_ms: u64) -> PyResult<Option<StreamEvent>> {
+    let got = py.detach(|| runtime::block_on(stream::next(timeout_ms)));
+    let event = got.map_err(PyRuntimeError::new_err)?;
+    Ok(event.map(|e| StreamEvent {
+        room_id: e.room_id,
+        sender: e.sender,
+        origin_server_ts: e.origin_server_ts,
+        event_id: e.event_id,
+        msgtype: e.msgtype,
+        body: e.body,
+        mentions: e.mentions,
+    }))
+}
+
+/// Stops the sync loop. Safe to call when none is running.
+#[pyfunction]
+fn stop_sync() {
+    stream::stop();
+}
+
+/// One `m.room.message` from the running sync loop.
+#[pyclass(frozen, get_all, skip_from_py_object, module = "shelltrix_core")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamEvent {
+    pub room_id: String,
+    pub sender: String,
+    pub origin_server_ts: u64,
+    pub event_id: String,
+    pub msgtype: String,
+    pub body: String,
+    pub mentions: bool,
+}
+
+#[pymethods]
+impl StreamEvent {
+    fn __repr__(&self) -> String {
+        format!(
+            "StreamEvent(room_id={:?}, event_id={:?}, sender={:?})",
+            self.room_id, self.event_id, self.sender
+        )
+    }
+}
+
 /// Version of the compiled core, distinct from the shelltrix app version.
 #[pyfunction]
 fn core_version() -> &'static str {
@@ -194,8 +309,12 @@ fn shelltrix_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_sync_messages, m)?)?;
     m.add_function(wrap_pyfunction!(core_version, m)?)?;
     m.add_function(wrap_pyfunction!(login_and_sync, m)?)?;
+    m.add_function(wrap_pyfunction!(start_sync, m)?)?;
+    m.add_function(wrap_pyfunction!(next_event, m)?)?;
+    m.add_function(wrap_pyfunction!(stop_sync, m)?)?;
     m.add_class::<SyncMessage>()?;
     m.add_class::<SyncSummary>()?;
+    m.add_class::<StreamEvent>()?;
     Ok(())
 }
 

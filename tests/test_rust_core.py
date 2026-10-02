@@ -294,3 +294,79 @@ class TestTransportBridge:
                 _core.login_and_sync(url, "alice", "pw")
         finally:
             server.shutdown()
+
+
+@needs_rust
+class TestSyncStream:
+    """The queue Python drains, from the Python side.
+
+    `shelltrix-core` proves the ordering and de-duplication in Rust. What only
+    Python can catch is the shape of what comes back: a transport is only
+    interchangeable if it hands the UI the same values.
+    """
+
+    @staticmethod
+    def _stub_server(delay: float = 0):
+        """A homeserver that refuses us, so the login fails fast.
+
+        401 rather than 500: matrix-sdk retries a 5xx with backoff, which turns
+        a test into a hang.
+        """
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def _refuse(self) -> None:
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"errcode":"M_FORBIDDEN","error":"stub"}')
+
+            do_GET = _refuse
+            do_POST = _refuse
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, f"http://127.0.0.1:{server.server_port}"
+
+    def teardown_method(self) -> None:
+        _core.stop_sync()
+
+    def test_a_refused_login_leaves_no_stream_behind(self) -> None:
+        """A failed start must not squat the slot.
+
+        If it did, one wrong password would brick the session: every later
+        start would answer "already running" and the user could never connect.
+        """
+        server, url = self._stub_server()
+        try:
+            with pytest.raises(RuntimeError):
+                _core.start_sync(url, "alice", "wrong-password")
+            with pytest.raises(RuntimeError, match="no sync is running"):
+                _core.next_event(0)
+        finally:
+            server.shutdown()
+
+    def test_asking_for_an_event_without_a_sync_says_so(self) -> None:
+        """Otherwise the UI would wait on a queue that will never be filled."""
+        with pytest.raises(RuntimeError, match="no sync is running"):
+            _core.next_event(0)
+
+    def test_stopping_without_a_sync_is_a_no_op(self) -> None:
+        """Quit must never raise, even if the loop never started."""
+        _core.stop_sync()
+        _core.stop_sync()
+
+    def test_the_facade_declares_exactly_the_core_event_fields(self) -> None:
+        """Both sides must agree on the fields, or the UI silently loses data.
+
+        A field added in Rust and forgotten in Python reads as an empty value
+        rather than an error, so the mismatch has to be caught here.
+        """
+        import shelltrix_core
+
+        core_fields = {a for a in dir(shelltrix_core.StreamEvent) if not a.startswith("_")}
+        assert set(_core.StreamEvent.__dataclass_fields__) == core_fields
