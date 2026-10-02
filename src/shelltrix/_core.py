@@ -54,6 +54,42 @@ class SyncMessage:
     mentions: bool
 
 
+@dataclass(frozen=True)
+class SyncSummary:
+    """What one `/sync` told us, as the Rust transport saw it.
+
+    Mirrors `shelltrix_core.SyncSummary`. Plain data on purpose: this is the
+    shape the facade can hand to the UI without importing matrix-sdk.
+    """
+
+    user_id: str
+    device_id: str
+    joined_rooms: tuple[str, ...]
+
+
+def login_and_sync(homeserver: str, user: str, password: str) -> SyncSummary:
+    """Logs in to `homeserver` and runs a single `/sync`, through the Rust core.
+
+    Blocking: it waits on the network, so callers must run it off the event
+    loop (`asyncio.to_thread`), exactly as they already do for matrix-nio's
+    calls. The Rust side releases the GIL while it waits, so the Textual UI
+    keeps repainting meanwhile — `tests/test_rust_core.py` asserts that,
+    because it is the failure mode that would look like an unrelated hang.
+
+    Raises:
+        RuntimeError: if the homeserver is unreachable, the credentials are
+            refused, or `/sync` fails.
+    """
+    if _rust is None:
+        raise RuntimeError("the Rust core is not installed (pip install shelltrix-core)")
+    summary = _rust.login_and_sync(homeserver, user, password)
+    return SyncSummary(
+        user_id=summary.user_id,
+        device_id=summary.device_id,
+        joined_rooms=tuple(summary.joined_rooms),
+    )
+
+
 def rust_available() -> bool:
     """Whether the compiled core is importable on this machine."""
     return _rust is not None

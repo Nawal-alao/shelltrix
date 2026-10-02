@@ -185,3 +185,112 @@ class TestBackendSelection:
         monkeypatch.setattr(_core, "_rust", None)
         with pytest.raises(ValueError, match="not installed"):
             parse_sync_messages(PAYLOAD, backend="rust")
+
+@needs_rust
+class TestTransportBridge:
+    """The GIL, which decides whether the UI can freeze.
+
+    matrix-sdk blocks on the network inside a call Python made. If the core
+    held the GIL across that wait, every Textual widget would stop repainting
+    for the duration of each `/sync` — a hang that looks like a bug in
+    something else entirely. `runtime.rs` detaches the GIL around the runtime
+    bridge (`py.detach` in `lib.rs`); this asserts the observable consequence,
+    without needing a real homeserver.
+
+    The threshold is half the expected tick rate, and it is loose on purpose.
+    A *Python* thread that spins still drops the GIL every 5 ms, so it degrades
+    to roughly 65% of the expected rate; a Rust thread that failed to detach
+    would emit no interpreter check point and freeze the loop outright. Half is
+    low enough to catch that, high enough not to fail on a loaded CI machine.
+    """
+
+    @staticmethod
+    def _stub_server(delay: float):
+        """A homeserver that stalls, so the call blocks long enough to measure.
+
+        It deliberately never succeeds: we only need the core to be genuinely
+        waiting on I/O, not to log in. That keeps the test independent of which
+        endpoints matrix-sdk happens to call first.
+
+        It answers 401 rather than 500 on purpose. matrix-sdk retries a 5xx
+        with backoff — which would make this test take minutes instead of one
+        second — while a 401 is a fatal auth error it surfaces immediately.
+        """
+        import threading
+        import time
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def _stall(self) -> None:
+                time.sleep(delay)
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"errcode":"M_FORBIDDEN","error":"stub"}')
+
+            do_GET = _stall
+            do_POST = _stall
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, f"http://127.0.0.1:{server.server_port}"
+
+    @pytest.mark.asyncio
+    async def test_the_event_loop_keeps_ticking_during_a_blocking_call(self) -> None:
+        import asyncio
+        import time
+
+        delay = 1.0
+        server, url = self._stub_server(delay)
+        try:
+            ticks = 0
+            stop = False
+
+            # Stands in for the Textual repaint loop.
+            async def heartbeat() -> None:
+                nonlocal ticks
+                while not stop:
+                    ticks += 1
+                    await asyncio.sleep(0.01)
+
+            beat = asyncio.create_task(heartbeat())
+            await asyncio.sleep(0.05)
+            before = ticks
+
+            started = time.perf_counter()
+            # The call is expected to fail — the stub refuses everything —
+            # which is fine: the point is how long it waited, and what else
+            # ran meanwhile. `wait_for` turns a regression into a failure
+            # rather than a hung test run.
+            with pytest.raises(RuntimeError):
+                await asyncio.wait_for(
+                    asyncio.to_thread(_core.login_and_sync, url, "alice", "pw"),
+                    timeout=delay * 6,
+                )
+            elapsed = time.perf_counter() - started
+
+            stop = True
+            await beat
+            during = ticks - before
+        finally:
+            server.shutdown()
+
+        assert elapsed >= delay, "the stub did not slow the call down as expected"
+        expected = elapsed / 0.01
+        assert during >= expected * 0.5, (
+            f"the loop only ticked {during} times during a {elapsed:.2f}s blocking "
+            f"call (expected about {expected:.0f}): the core is holding the GIL, "
+            "so the UI would freeze"
+        )
+
+    def test_the_core_reports_a_failure_rather_than_an_empty_result(self) -> None:
+        """A homeserver that refuses us must not look like a successful login."""
+        server, url = self._stub_server(0)
+        try:
+            with pytest.raises(RuntimeError):
+                _core.login_and_sync(url, "alice", "pw")
+        finally:
+            server.shutdown()

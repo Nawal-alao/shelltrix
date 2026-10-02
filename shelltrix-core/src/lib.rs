@@ -15,7 +15,10 @@
 //! deliberately — it is the slice with no secret state, so it can be
 //! migrated and validated without touching what must not break.
 
-use pyo3::exceptions::PyValueError;
+pub mod runtime;
+pub mod transport;
+
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 /// One `m.room.message` of a `/sync` response.
@@ -123,6 +126,63 @@ fn parse_sync_messages(payload: &[u8]) -> PyResult<Vec<SyncMessage>> {
     Ok(out)
 }
 
+/// A `/sync` result, as Python sees it.
+#[pyclass(frozen, get_all, skip_from_py_object, module = "shelltrix_core")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncSummary {
+    /// `@alice:hs`, as the homeserver confirms it.
+    pub user_id: String,
+    /// The device this session authenticated as.
+    pub device_id: String,
+    /// Joined room identifiers, sorted.
+    pub joined_rooms: Vec<String>,
+}
+
+#[pymethods]
+impl SyncSummary {
+    fn __repr__(&self) -> String {
+        format!(
+            "SyncSummary(user_id={:?}, device_id={:?}, rooms={})",
+            self.user_id,
+            self.device_id,
+            self.joined_rooms.len()
+        )
+    }
+}
+
+/// Logs in to a homeserver and runs one `/sync`, then comes back.
+///
+/// This is the proof that the migration is mechanically possible from Python:
+/// matrix-sdk's Tokio runs on its own thread (see `runtime`), the GIL is
+/// released while it waits, and the result arrives as a plain pyclass.
+///
+/// Blocking, and meant to be called off the event loop: the facade runs it in
+/// a worker task, as it already does for matrix-nio's network calls.
+///
+/// Errors:
+/// - `RuntimeError` if the homeserver is unreachable, the credentials are
+///   wrong, or `/sync` fails.
+#[pyfunction]
+#[pyo3(text_signature = "(homeserver: str, user: str, password: str) -> SyncSummary")]
+fn login_and_sync(
+    py: Python<'_>,
+    homeserver: &str,
+    user: &str,
+    password: &str,
+) -> PyResult<SyncSummary> {
+    // `detach` (called `allow_threads` before PyO3 0.29) is not an
+    // optimisation: holding the GIL here would freeze the whole Textual UI
+    // for the duration of the network round-trip.
+    let got =
+        py.detach(|| runtime::block_on(transport::login_and_sync(homeserver, user, password)));
+    let summary = got.map_err(PyRuntimeError::new_err)?;
+    Ok(SyncSummary {
+        user_id: summary.user_id,
+        device_id: summary.device_id,
+        joined_rooms: summary.joined_rooms,
+    })
+}
+
 /// Version of the compiled core, distinct from the shelltrix app version.
 #[pyfunction]
 fn core_version() -> &'static str {
@@ -133,13 +193,20 @@ fn core_version() -> &'static str {
 fn shelltrix_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_sync_messages, m)?)?;
     m.add_function(wrap_pyfunction!(core_version, m)?)?;
+    m.add_function(wrap_pyfunction!(login_and_sync, m)?)?;
     m.add_class::<SyncMessage>()?;
+    m.add_class::<SyncSummary>()?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_runtime_bridge_is_reachable_from_this_crate() {
+        assert_eq!(runtime::block_on(async { 7 }), 7);
+    }
 
     fn payload() -> &'static str {
         r#"{"rooms":{"join":{"!a:hs":{"timeline":{"events":[

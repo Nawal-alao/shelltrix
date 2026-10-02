@@ -122,7 +122,8 @@ Migrated so far, each step verified:
 | `/sync` parsing → timeline messages | done, 30x measured |
 | Feasibility against a real homeserver (step 3.0) | done, loop closed |
 | Transport seam: UI free of nio (step 3.1) | done, enforced by a test |
-| Rust transport (step 3.2) | **not started** |
+| Rust transport: login + one /sync from Python (step 3.2a) | done |
+| Rust sync loop as an event stream (step 3.2b) | **not started** |
 | E2EE (olm store, key management) | **not started** |
 | Rust as the default backend | not started |
 
@@ -186,9 +187,36 @@ the UI, a `from nio import RoomMessageImage` in the middle of a handler, and
 `test_no_module_above_the_transport_imports_nio` now enforces this, and it
 caught a leak in `dialogs/invite.py` the moment it was written.
 
-The seam is therefore closed on the Python side. Step 3.2 becomes: rewrite
-`matrix_client.py`'s nio section as a matrix-sdk transport emitting these same
-dataclasses.
+The seam is therefore closed on the Python side.
+
+### Step 3.2a — Python can drive the Rust core
+
+`login_and_sync(homeserver, user, password)` in the core: log in, run one
+`/sync`, return a plain `SyncSummary`. Called from Python through
+`shelltrix._core`, against the local Synapse, it returns a real device ID and
+the joined room in ~0.7 s.
+
+The part that mattered was not the login. It was the GIL. matrix-sdk waits on
+the network inside a call Python made, so:
+
+- `runtime.rs` puts the Tokio runtime on a dedicated thread, started once and
+  parked forever. It is never built on a Python thread.
+- `lib.rs` wraps every call in `py.detach` (renamed from `allow_threads` in
+  PyO3 0.29), so the caller parks with the GIL released.
+
+Measured against the real homeserver: a 404 ms blocking call, 39 event-loop
+ticks where ~40 were expected. The loop kept its full rate, so Textual keeps
+repainting. That is now a test — against a stub homeserver that stalls, so it
+needs no network — and it is the assertion to protect: if the GIL were ever
+held again, the symptom would be a UI freeze blamed on something else.
+
+`matrix-sdk` also raised the crate's MSRV to 1.96, and the release build takes
+~20 minutes on a cold cache. Both are costs worth knowing before widening the
+wheel matrix.
+
+What is left is step 3.2b: the sync loop as a queue Python drains, then
+`matrix_client.py`'s nio section replaced by a matrix-sdk transport emitting
+the dataclasses above.
 
 Recipe to reproduce: a Synapse venv (`matrix-synapse`, Python 3.12, SQLite),
 `register_new_matrix_user -c homeserver.yaml -a`, then a cargo bin depending
