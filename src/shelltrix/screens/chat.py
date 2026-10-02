@@ -38,6 +38,9 @@ from ..formatting import (
     format_date_separator,
     format_timeline_blocks,
     highlight_mentions,
+    reply_fallback,
+    reply_target_of,
+    strip_reply_fallback,
 )
 from ..image_renderer import format_image_message, is_image_message, render_image
 from ..matrix_client import ShelltrixClient
@@ -95,6 +98,10 @@ class ChatScreen(Screen):
         # État de groupage de la timeline par salon (dernier expéditeur /
         # temps pour les séparateurs temporels et les blocs).
         self._timeline_ctx: dict[str, TimelineContext] = {}
+        # Index event_id → nom par salon : sert à résoudre le message cité
+        # par une reply (« en réponse à X »). Vide tant qu'un salon n'a pas
+        # été rendu.
+        self._reply_index: dict[str, dict[str, str]] = {}
         # Dernier event_id reçu par salon : sert à la commande /react.
         self.last_event_id: dict[str, str] = {}
         # Dernière URL aperçue par salon : sert à la commande "ouvrir le lien".
@@ -399,6 +406,7 @@ class ChatScreen(Screen):
         ctx = TimelineContext()
         blocks, ctx = format_timeline_blocks(entries, ctx, header_for=self._header_for)
         self._timeline_ctx[room_id] = ctx
+        self._reply_index.pop(room_id, None)
         widgets: list[Widget] = []
         for block in blocks:
             widgets.extend(self._prefix_widgets(block))
@@ -645,6 +653,14 @@ class ChatScreen(Screen):
                 elif isinstance(ev, RoomMessageText):
                     body = getattr(ev, "body", "") or ""
                     own = ev.sender == me
+                    reply_to = reply_target_of(
+                        getattr(ev, "source", {}).get("content", {})
+                    )
+                    cited_id, cited_name = self._event_names(room_id).get(
+                        reply_to, ("", "")
+                    )
+                    if reply_to:
+                        body = strip_reply_fallback(body, cited_id)
                     out.append(
                         TimelineEntry(
                             sender=ev.sender,
@@ -658,6 +674,8 @@ class ChatScreen(Screen):
                             msgtype=getattr(ev, "msgtype", "m.text") or "m.text",
                             has_mention=body_mentions_user(body, own_id),
                             timestamp=_format_time(raw_ts),
+                            reply_to_event_id=reply_to,
+                            reply_to_name=cited_name,
                         )
                     )
             except Exception:
@@ -693,6 +711,34 @@ class ChatScreen(Screen):
         color = _sender_color(entry.sender)
         name = escape(entry.display_name or entry.sender)
         return f"{stamp}[{color}]‹ {name}[/{color}]"
+
+    # -- Résolution des replies et des réactions ----------------------------
+
+    def _event_names(self, room_id: str) -> dict[str, tuple[str, str]]:
+        """Index `event_id` → (user_id, nom d'affichage) d'un salon.
+
+        Sert à deux choses qui ne se déduisent pas l'une de l'autre :
+          - le préfixe de repli `<@user_id>` qu'on pose à l'envoi, qui exige
+            l'IDENTIFIANT et pas le nom d'affichage (c'était le bug : on
+            cherchait « Tim » là où le corps contenait `<@tim:hs> `) ;
+          - l'étiquette « en réponse à X », qui veut le nom lisible.
+        Reconstruit à chaque rendu complet (l'historique préfixé change le
+        contenu), puis incrémentalement à l'ajout.
+        """
+        idx = self._reply_index.get(room_id)
+        if idx is None:
+            idx = {
+                e.event_id: (e.sender, e.display_name or e.sender)
+                for e in self.message_log.get(room_id, [])
+                if e.event_id
+            }
+            self._reply_index[room_id] = idx
+        return idx
+
+    def _reactions_markup(self, room_id: str, event_id: str) -> str:
+        return reaction_summary(
+            reaction_counts(self._reactions.get((room_id, event_id), {}))
+        )
 
     def on_resize(self, event: events.Resize) -> None:
         """Largeurs progressives des sidebars selon la largeur du terminal.
@@ -748,6 +794,7 @@ class ChatScreen(Screen):
     SLASH_HELP = {
         "/me <text>": "send an action (m.emote, rendered in italic)",
         "/react <emoji>": "react to the last received message",
+        "/reply <text>": "reply to the last received message",
         "/join <#alias>": "join a room by alias",
         "/sendimg <path>": "send an image from disk",
         "/search <text>": "search the local message history",
@@ -761,6 +808,7 @@ class ChatScreen(Screen):
     SLASH_DESC = {
         "/me": "send an action",
         "/react": "react to the last message",
+        "/reply": "reply to the last message",
         "/join": "join a room",
         "/sendimg": "send an image",
         "/search": "search local history",
@@ -793,6 +841,24 @@ class ChatScreen(Screen):
                 self.app.notify("No message received to react to in this room")
                 return
             await self.client.react_to(room_id, event_id, arg)
+        elif cmd == "/reply":
+            if not arg:
+                self.app.notify("/reply <text>: a reply text is required", severity="error")
+                return
+            event_id = self.last_event_id.get(room_id)
+            if not event_id:
+                self.app.notify("No message received to reply to in this room")
+                return
+            # Reply au DERNIER message reçu, comme /react. On retrouve son
+            # auteur via l'index pour poser le préfixe de repli qu'exige la
+            # spec Matrix (les clients qui n'affichent pas la relation doivent
+            # quand même voir à qui on répond).
+            cited_id, _cited_name = self._event_names(room_id).get(event_id, ("", ""))
+            await self.client.send_message(
+                room_id,
+                reply_fallback(arg, cited_id),
+                reply_to_event_id=event_id,
+            )
         elif cmd == "/join":
             if not arg or not arg.startswith("#"):
                 self.app.notify("/join <#alias>: provide a room alias", severity="error")
@@ -1092,6 +1158,11 @@ class ChatScreen(Screen):
         """
         self.message_log.setdefault(room_id, []).append(entry)
         self._cache.upsert_entries(room_id, [entry])
+        if entry.event_id:
+            self._event_names(room_id)[entry.event_id] = (
+                entry.sender,
+                entry.display_name or entry.sender,
+            )
         if room_id != self.active_room_id:
             return
         ctx = self._timeline_ctx.get(room_id, TimelineContext())
@@ -1127,7 +1198,18 @@ class ChatScreen(Screen):
     async def _handle_incoming_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
         me = self.client.client.user_id
         own = event.sender == me
-        body = highlight_mentions(_inline_markdown(event.body), me)
+        raw = event.body or ""
+        # Reply : on lit la relation pour savoir quel message est cité, et on
+        # retire le préfixe de repli que nous poseurs à l'envoi (sinon notre
+        # propre timeline afficherait l'original collé à la réponse).
+        reply_to = reply_target_of(getattr(event, "source", {}).get("content", {}))
+        cited_id, cited_name = self._event_names(room.room_id).get(reply_to, ("", ""))
+        if reply_to:
+            # Le préfixe de repli qu'on pose à l'envoi reprend l'AUTEUR DU
+            # MESSAGE CITÉ : on le retire par son user_id, sinon notre propre
+            # timeline afficherait l'original collé à la réponse.
+            raw = strip_reply_fallback(raw, cited_id)
+        body = highlight_mentions(_inline_markdown(raw), me)
         # On mémorise le dernier event_id du salon : la commande /react s'y
         # réfère pour poser une réaction.
         self.last_event_id[room.room_id] = event.event_id
@@ -1148,6 +1230,8 @@ class ChatScreen(Screen):
             msgtype=getattr(event, "msgtype", "m.text") or "m.text",
             has_mention=body_mentions_user(event.body, me),
             timestamp=_format_time(event.server_timestamp),
+            reply_to_event_id=reply_to,
+            reply_to_name=cited_name,
         )
         if room.room_id != self.active_room_id:
             self._notify_incoming(room, entry, event.body)
@@ -1242,6 +1326,7 @@ class ChatScreen(Screen):
             return
         self.message_log.pop(self.active_room_id, None)
         self._timeline_ctx.pop(self.active_room_id, None)
+        self._reply_index.pop(self.active_room_id, None)
         self.unread[self.active_room_id] = 0
         self._cache.clear_room(self.active_room_id)
         self.query_one("#timeline", VerticalScroll).remove_children()

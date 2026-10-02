@@ -244,12 +244,24 @@ class ShelltrixClient:
             if self.on_send_error is not None:
                 await self.on_send_error(room_id, f"{type(exc).__name__}: {exc}")
 
-    async def send_message(self, room_id: str, body: str) -> None:
-        await self._send(
-            room_id,
-            "m.room.message",
-            {"msgtype": "m.text", "body": body},
-        )
+    async def send_message(
+        self, room_id: str, body: str, *, reply_to_event_id: str = ""
+    ) -> None:
+        """Envoie un message texte, éventuellement en réponse à un autre.
+
+        Quand `reply_to_event_id` est fourni, on pose les DEUX formes attendues
+        par la spec : la relation `m.in_reply_to` (lue par les clients
+        modernes) et le préfixe de repli `<@auteur> texte d'origine` dans le
+        corps (lue par les clients anciens, qui n'affichent que le corps).
+        `reply_fallback` est le point unique qui construit ce préfixe.
+        """
+        content: dict = {"msgtype": "m.text", "body": body}
+        if reply_to_event_id:
+            content["m.relates_to"] = {
+                "rel_type": "m.in_reply_to",
+                "event_id": reply_to_event_id,
+            }
+        await self._send(room_id, "m.room.message", content)
 
     async def send_emote(self, room_id: str, body: str) -> None:
         """Commande /me : une action affichée en italique (* nom action)."""
