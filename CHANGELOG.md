@@ -9,6 +9,30 @@ respecte [SemVer](https://semver.org/).
 En préparation de la 1.0.0.
 
 ### Added
+- **Réponses** : la commande `/reply` répond au dernier message reçu dans le
+  salon courant. Le message envoyé porte le `m.relates_to` prévu par la spec
+  Matrix (`m.in_reply_to`), avec un repli `↪ Nom` quand la cible est inconnue
+  ou hors cache. Le message cité est restitué depuis l'historique et affiché
+  dans le message qui répond.
+- **Réactions** : `/reactions` liste les réactions d'un message ; la commande
+  `/react <emoji>` en ajoute une. Le total est affiché sous le message et
+  rafraîchi à chaud, ou reconstruit depuis l'historique au rechargement d'un
+  salon.
+- **Timeline en widgets** : chaque message est un widget `MessageView` plutôt
+  qu'une ligne de `RichLog`. Les messages longs sont repliés après quelques
+  lignes (« voir plus » pour les déplier), l'heure s'affiche dans une gouttière
+  à gauche, et un séparateur de jour (`aujourd'hui`, `hier`, `lundi 4 mars`)
+  s'intercale entre deux journées.
+- **Premier lancement uniquement** : le splash de bienvenue n'apparaît que la
+  première fois ; les lancements suivants vont directement à la liste des
+  salons.
+- **Cadres de sidebar** : les sections ROOM et SESSION sont encadrées, la liste
+  des salons est présentée comme une arborescence (`├─`), et la palette de
+  commandes comme la recherche gagnent une barre de titre avec le rappel des
+  raccourcis.
+- **Démarrage non bloquant** : le premier sync part en tâche de fond, l'écran
+  s'affiche immédiatement et la liste des salons se peuple dès que la réponse
+  arrive.
 - **Timeline conversationnelle groupée** : les messages consécutifs du même
   expéditeur sont regroupés en blocs avec un seul indicateur `› Vous` /
   `‹ Nom` (au lieu d'un nom répété à chaque ligne, façon journal système). Un
@@ -59,6 +83,14 @@ En préparation de la 1.0.0.
   vérification CI du contenu du wheel (`app.tcss` présent).
 
 ### Fixed
+- L'ouverture d'un message depuis la recherche (`Ctrl+F` → `Entrée`) positionne
+  la timeline sur le bon message au lieu de tomber en haut du salon.
+- La vue ne saute plus en bas de la timeline quand un préfixe d'historique
+  arrive : la position de défilement est recalée une fois les widgets montés.
+- Le champ « alias » du modal « Join a room » rejoint le salon avec `Entrée`,
+  comme le bouton.
+- Les messages d'erreur destinés à l'utilisateur final sont en anglais
+  (conventions des codes de sortie), au lieu d'un mélange français/anglais.
 - `app.tcss` est désormais embarqué dans le paquet (`setuptools.package-data`) :
   le fichier ne disparaît plus après `pip install`.
 - L'installateur utilise le gestionnaire de paquets pour `pipx`
