@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
+
+CORE_BACKEND = os.getenv("SHELLTRIX_CORE", "python")
 
 from nio import (
     AsyncClient,
@@ -155,6 +158,15 @@ class ShelltrixClient:
     sync_state: str = field(init=False, default="connecting")
 
     def __post_init__(self) -> None:
+        if CORE_BACKEND == "rust":
+            # Rust backend: the network and sync loop are provided by the
+            # PyO3 extension (shelltrix_core). The nio client is not used.
+            self.client = None
+            self._sync_task = None
+            self.first_sync_done = False
+            self.sync_state = "connecting"
+            # The Rust core will be driven externally (e.g. via start_sync / next_event).
+            return
         store_path = str(ensure_store_dir())
         config = AsyncClientConfig(
             store_sync_tokens=True,
