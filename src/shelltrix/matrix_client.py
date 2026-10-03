@@ -1,21 +1,32 @@
-"""Thin layer on top of matrix-nio for shelltrix.
+"""Thin layer on top of the Matrix protocol for shelltrix.
 
-This class centralizes everything touching the Matrix protocol: connection,
-sync loop, message sending, basic encryption handling (E2EE) and emoji
-verification. The Textual UI never talks directly to `nio` — it always
-goes through here.
+This class centralizes everything touching Matrix: connection, sync loop,
+message sending, basic encryption handling (E2EE) and emoji verification. The
+Textual UI never talks to a Matrix library directly — it always goes through
+here.
+
+There are two backends behind that one interface. matrix-nio is the default and
+the only mandatory dependency; the compiled Rust core is opt-in
+(`SHELLTRIX_CORE=rust`). `_core.selected_backend()` decides, and it is the only
+place that decides.
+
+The Rust core currently receives and does not send: it syncs, classifies events
+and resolves room names, which is enough to display a live conversation. Sending
+and E2EE are not implemented there yet, so every operation that needs them
+raises `_core.UnsupportedOperation` naming what is missing. That is deliberate.
+The alternative — a client that silently has no `self.client` and dies with an
+`AttributeError` — is worse than one that says it cannot do something yet.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import mimetypes
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
-
-CORE_BACKEND = os.getenv("SHELLTRIX_CORE", "python")
 
 from nio import (
     AsyncClient,
@@ -34,8 +45,12 @@ from nio import (
 )
 from nio.exceptions import LocalProtocolError
 
+from . import _core
+from ._core import KIND_IMAGE, KIND_INVITE, KIND_MESSAGE, KIND_REACTION, KIND_TYPING
 from .config import Credentials, decrypt_store, encrypt_store, ensure_store_dir, remove_store
 from .events import ImageEvent, MessageEvent, MessagePage, Room
+
+log = logging.getLogger(__name__)
 
 MessageHandler = Callable[[Room, MessageEvent], Awaitable[None]]
 ImageHandler = Callable[[Room, ImageEvent], Awaitable[None]]
@@ -138,7 +153,10 @@ FirstSyncHandler = Callable[[], Awaitable[None]]
 @dataclass
 class ShelltrixClient:
     creds: Credentials
-    client: AsyncClient = field(init=False)
+    #: The matrix-nio client, or None on the Rust backend. Everything that needs
+    #: it goes through `_nio()`, so an operation the Rust core has not migrated
+    #: raises `UnsupportedOperation` instead of failing on `None`.
+    client: AsyncClient | None = field(init=False)
     _sync_task: asyncio.Task | None = field(init=False, default=None)
     on_message: MessageHandler | None = None
     on_image: ImageHandler | None = None
@@ -158,40 +176,78 @@ class ShelltrixClient:
     sync_state: str = field(init=False, default="connecting")
 
     def __post_init__(self) -> None:
-        if CORE_BACKEND == "rust":
-            # Rust backend: the network and sync loop are provided by the
-            # PyO3 extension (shelltrix_core). The nio client is not used.
-            self.client = None
-            self._sync_task = None
-            self.first_sync_done = False
-            self.sync_state = "connecting"
-            # The Rust core will be driven externally (e.g. via start_sync / next_event).
-            return
-        store_path = str(ensure_store_dir())
-        config = AsyncClientConfig(
-            store_sync_tokens=True,
-            encryption_enabled=True,
-        )
-        self.client = AsyncClient(
-            homeserver=self.creds.homeserver,
-            user=self.creds.user_id,
-            device_id=self.creds.device_id,
-            store_path=store_path,
-            config=config,
-        )
-        self.client.access_token = self.creds.access_token
-        self.client.user_id = self.creds.user_id
+        # `_core.selected_backend()` is the single decision. An unknown value or
+        # a missing Rust build falls back to matrix-nio, which is why `client` is
+        # never None here.
+        self._backend = _core.selected_backend()
         self._store_loaded = False
-
-        self.client.add_event_callback(self._handle_message, RoomMessageText)
-        self.client.add_event_callback(self._handle_image, RoomMessageImage)
-        self.client.add_event_callback(self._handle_reaction, RoomMessage)
-        self.client.add_event_callback(self._handle_typing, TypingNoticeEvent)
-        self.client.add_event_callback(self._handle_invite, InviteMemberEvent)
-        self.client.add_to_device_callback(
-            self._handle_verification, (KeyVerificationEvent,)
-        )
+        # Room list on the Rust backend. matrix-nio keeps its own, so this stays
+        # empty there and `rooms()` reads it from the nio client instead.
+        self._rooms: dict[str, Room] = {}
         self._ever_connected = False
+
+        if self._backend != "rust":
+            store_path = str(ensure_store_dir())
+            config = AsyncClientConfig(
+                store_sync_tokens=True,
+                encryption_enabled=True,
+            )
+            self.client = AsyncClient(
+                homeserver=self.creds.homeserver,
+                user=self.creds.user_id,
+                device_id=self.creds.device_id,
+                store_path=store_path,
+                config=config,
+            )
+            self.client.access_token = self.creds.access_token
+            self.client.user_id = self.creds.user_id
+
+            self.client.add_event_callback(self._handle_message, RoomMessageText)
+            self.client.add_event_callback(self._handle_image, RoomMessageImage)
+            self.client.add_event_callback(self._handle_reaction, RoomMessage)
+            self.client.add_event_callback(self._handle_typing, TypingNoticeEvent)
+            self.client.add_event_callback(self._handle_invite, InviteMemberEvent)
+            self.client.add_to_device_callback(
+                self._handle_verification, (KeyVerificationEvent,)
+            )
+            return
+
+        if not _core.supports_e2ee():
+            # Loud, because the alternative is invisible: without a crypto store
+            # the core reports an encrypted room as empty, and a user would read
+            # that as "nobody has said anything" rather than "this client cannot
+            # read this room".
+            log.warning(
+                "SHELLTRIX_CORE=rust but this build cannot decrypt encrypted "
+                "rooms: they will appear empty. Use SHELLTRIX_CORE=python for "
+                "E2EE, or build the core with --features e2e-encryption."
+            )
+        self.client = None
+
+    # ------------------------------------------------------------------
+    # Backend access
+    # ------------------------------------------------------------------
+    @property
+    def backend(self) -> str:
+        """Which transport this client is running on: `python` or `rust`."""
+        return self._backend
+
+    def _nio(self, operation: str) -> AsyncClient:
+        """The matrix-nio client, or a clear refusal.
+
+        `operation` names what the user was trying to do, because that is what
+        makes the error actionable: "sending is not available on this backend"
+        can be looked up, whereas `AttributeError: 'NoneType' object has no
+        attribute 'room_send'` cannot.
+        """
+        if self.client is None:
+            raise _core.UnsupportedOperation(
+                f"{operation} is not available on the Rust backend yet. The Rust "
+                "core currently syncs and displays; sending, uploading, room "
+                "changes, history and E2EE verification still need migrating. "
+                "Unset SHELLTRIX_CORE to go back to matrix-nio."
+            )
+        return self.client
 
     # ------------------------------------------------------------------
     # Connection
@@ -222,6 +278,12 @@ class ShelltrixClient:
         Raises decrypt_store()/StoreLockedError when the store key is
         unavailable: the UI then offers restoration via the session
         recovery key."""
+        if self.client is None:
+            # No nio store, hence no nio keys to load. The Rust core has no
+            # crypto store yet, which is why `start()` warns about it; doing
+            # nothing here is correct rather than a stub, there is simply
+            # nothing to load.
+            return
         if self.client.olm is None or self._store_loaded:
             return
         # The store was encrypted at rest: we restore it before reading the
@@ -240,7 +302,8 @@ class ShelltrixClient:
         `sync_state` and refreshes on `on_first_sync`."""
         self.load_local_store()
         self.sync_state = "syncing"
-        self._sync_task = asyncio.create_task(self._run_sync_forever())
+        loop = self._run_sync_forever_rust if self.client is None else self._run_sync_forever
+        self._sync_task = asyncio.create_task(loop())
 
     async def _fire_first_sync(self) -> None:
         """Tells the UI the first sync succeeded (room list is full).
@@ -253,6 +316,17 @@ class ShelltrixClient:
             await self.on_first_sync()
         except Exception:
             pass
+
+    async def _mark_first_sync(self) -> None:
+        """Fires `on_first_sync` once, the first time the sync is known complete.
+
+        Guarded on the flag rather than only on the call site because the Rust
+        loop checks it after every wait and could otherwise fire it repeatedly.
+        """
+        if self.first_sync_done:
+            return
+        self.first_sync_done = True
+        await self._fire_first_sync()
 
     async def _run_sync_forever(self) -> None:
         """Sync loop as a background task, with automatic reconnection.
@@ -279,8 +353,7 @@ class ShelltrixClient:
                 self._ever_connected = True
                 if not first_sync_done:
                     first_sync_done = True
-                    self.first_sync_done = True
-                    await self._fire_first_sync()
+                    await self._mark_first_sync()
                 delay = 1.0  # success: reset the backoff clock to zero
                 # Yield to the event loop between two iterations: avoids a
                 # tight loop if the server replies instantly.
@@ -298,10 +371,143 @@ class ShelltrixClient:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, MAX_BACKOFF)
 
+    # ------------------------------------------------------------------
+    # Rust backend
+    #
+    # matrix-nio delivers events through callbacks it owns. The Rust core
+    # cannot do that — a Rust thread calling into Python needs the GIL, and
+    # Python is then waiting on Rust, which deadlocks. So the core pushes
+    # events into a queue and this loop pulls them, the same shape
+    # `_core.start_sync`/`next_event` was designed for.
+    # ------------------------------------------------------------------
+    def _rust_session(self) -> dict[str, str]:
+        """The saved session, as `start_sync_with_token` wants it."""
+        return {
+            "homeserver": self.creds.homeserver,
+            "user_id": self.creds.user_id,
+            "device_id": self.creds.device_id,
+            "access_token": self.creds.access_token,
+        }
+
+    async def _run_sync_forever_rust(self) -> None:
+        """Drains the Rust core's event queue and dispatches to the handlers.
+
+        The same reconnection contract as the matrix-nio loop, and the same
+        backoff. One difference is forced by the transport: the core owns its
+        own sync task, so when the queue reports the loop ended we have to tear
+        it down and start a new one rather than simply calling `sync()` again.
+        """
+        delay = 1.0
+        MAX_BACKOFF = 30.0
+        while True:
+            try:
+                self.sync_state = "syncing"
+                while True:
+                    try:
+                        # Blocking: runs in a worker thread, and the core
+                        # releases the GIL while it waits, so the UI keeps
+                        # repainting (which `tests/test_rust_core.py` asserts).
+                        event = await asyncio.to_thread(_core.next_event, _core.EVENT_WAIT_MS)
+                    except RuntimeError:
+                        # The core's sync task ended: the homeserver dropped us,
+                        # or the token was revoked. Either way the queue is
+                        # closed and only a fresh sync can reopen it.
+                        _core.stop_sync()
+                        await asyncio.to_thread(_core.start_sync_with_token, **self._rust_session())
+                        delay = 1.0
+                        continue
+                    # `None` means the long poll expired: the loop is healthy and
+                    # the room is simply quiet, which is the common case.
+                    self.sync_state = "online"
+                    self._ever_connected = True
+                    if event is not None:
+                        await self._dispatch_rust_event(event)
+                    # Asked on every wait, not after every event: a quiet account
+                    # must still be told its room list is complete.
+                    if _core.first_sync_done():
+                        await self._mark_first_sync()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if self._ever_connected:
+                    self.sync_state = "reconnecting"
+                else:
+                    self.sync_state = "offline"
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, MAX_BACKOFF)
+
+    async def _dispatch_rust_event(self, event: _core.StreamEvent) -> None:
+        """Routes one classified event to the handler that owns its kind.
+
+        The mirror image of matrix-nio's `add_event_callback` registrations: the
+        UI sees the same callbacks with the same arguments either way, so this
+        is the whole of the transport swap on the receiving side.
+        """
+        room = self._rust_room(event.room_id)
+        if event.kind == KIND_MESSAGE and self.on_message is not None:
+            await self.on_message(room, event.as_timeline_event())
+        elif event.kind == KIND_IMAGE and self.on_image is not None:
+            await self.on_image(room, event.as_timeline_event())
+        elif event.kind == KIND_REACTION and self.on_reaction is not None:
+            await self.on_reaction(room, event.target, event.key, event.sender)
+        elif event.kind == KIND_TYPING and self.on_typing is not None:
+            await self.on_typing(event.room_id, list(event.users))
+        elif event.kind == KIND_INVITE and self.on_invite is not None:
+            await self.on_invite(event.room_id, room, event.sender)
+
+    def _refresh_rust_rooms(self) -> None:
+        """Rebuilds the room cache from the core's snapshot.
+
+        Called before the UI reads `rooms()`, and whenever an event arrives for a
+        room the cache has not seen — the core may already know a name that the
+        last snapshot predated.
+        """
+        try:
+            snapshot = _core.rooms_snapshot()
+        except RuntimeError as exc:
+            # No sync running (stopping, or a failed start). An empty room list
+            # is the right answer: showing stale rooms after a disconnect would
+            # be worse, and this is not worth failing a repaint over.
+            log.debug("cannot read the room list from the Rust core: %s", exc)
+            return
+        self._rooms = {
+            room.room_id: Room(
+                room_id=room.room_id,
+                display_name=room.display_name,
+                name=room.name,
+                user_names=room.user_names,
+            )
+            for room in snapshot
+        }
+
+    def _rust_room(self, room_id: str) -> Room:
+        """The room an event came from, named.
+
+        Falls back to the room id so an event is never dropped for want of a
+        name — but tries the snapshot first, because an event can arrive in the
+        same sync response that first names its room.
+        """
+        room = self._rooms.get(room_id)
+        if room is None:
+            self._refresh_rust_rooms()
+            room = self._rooms.get(room_id)
+        if room is None:
+            room = Room(room_id=room_id, display_name=room_id)
+            self._rooms[room_id] = room
+        return room
+
     async def stop(self) -> None:
         if self._sync_task is not None:
             self._sync_task.cancel()
-        await self.client.close()
+            # Awaited so the task is really finished before the transport goes
+            # away: a cancelled loop still holding a `next_event` would wake into
+            # a closed core and log a spurious error on the way out.
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._sync_task
+        if self.client is None:
+            _core.stop_sync()
+        else:
+            await self.client.close()
         # E2EE session keys are protected at rest after shutdown.
         # A key persistence failure is reported LOUDLY: we do not quit the
         # app leaving the store in plaintext without saying so.
@@ -322,20 +528,31 @@ class ShelltrixClient:
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
-    async def _send(self, room_id: str, message_type: str, content: dict) -> None:
+    async def _send(
+        self, room_id: str, message_type: str, content: dict, *, operation: str = "sending a message"
+    ) -> None:
         """Sends a room event, applying the security policy.
 
         Unverified devices are NOT ignored: if the room is encrypted and a
         contact has not verified their device, nio refuses the send
         (LocalProtocolError). We report it to the UI instead of delivering to
         a potentially compromised recipient.
+
+        `operation` is what the user was doing, so a refusal names it. Every
+        send goes through here, which would otherwise mean all of them are
+        reported as "sending a message".
         """
         try:
-            await self.client.room_send(
+            await self._nio(operation).room_send(
                 room_id=room_id,
                 message_type=message_type,
                 content=content,
             )
+        except _core.UnsupportedOperation:
+            # Refused for want of an implementation, not because the server said
+            # no. Reporting it through `on_send_error` would dress a missing
+            # feature up as a delivery failure, so it stays an exception.
+            raise
         except LocalProtocolError as exc:
             if self.on_send_error is not None:
                 await self.on_send_error(room_id, str(exc))
@@ -360,7 +577,7 @@ class ShelltrixClient:
                 "rel_type": "m.in_reply_to",
                 "event_id": reply_to_event_id,
             }
-        await self._send(room_id, "m.room.message", content)
+        await self._send(room_id, "m.room.message", content, operation="sending a message")
 
     async def send_emote(self, room_id: str, body: str) -> None:
         """/me command: an action displayed in italics (* action name)."""
@@ -368,6 +585,7 @@ class ShelltrixClient:
             room_id,
             "m.room.message",
             {"msgtype": "m.emote", "body": body},
+            operation="sending an emote",
         )
 
     async def react_to(self, room_id: str, event_id: str, reaction: str) -> None:
@@ -382,6 +600,7 @@ class ShelltrixClient:
                     "key": reaction,
                 }
             },
+            operation="reacting to a message",
         )
 
     async def fetch_reactions(
@@ -404,7 +623,7 @@ class ShelltrixClient:
         from .formatting import annotation_of
 
         by_sender: dict[str, str] = {}
-        async for event in self.client.room_get_event_relations(
+        async for event in self._nio("reading reactions").room_get_event_relations(
             room_id,
             event_id,
             rel_type=RelationshipType.annotation,
@@ -427,7 +646,7 @@ class ShelltrixClient:
         """/quit command: leaves the room (optional farewell message)."""
         if message:
             await self.send_message(room_id, message)
-        await self.client.room_leave(room_id)
+        await self._nio("leaving a room").room_leave(room_id)
 
     async def send_image(self, room_id: str, path: str) -> None:
         """/sendimg command: uploads an image and sends it (encrypted, like
@@ -441,13 +660,15 @@ class ShelltrixClient:
         size = file.stat().st_size
         try:
             with file.open("rb") as fh:
-                resp, decrypt_keys = await self.client.upload(
+                resp, decrypt_keys = await self._nio("uploading an image").upload(
                     fh,
                     content_type=mimetype,
                     filename=file.name,
                     encrypt=True,
                     filesize=size,
                 )
+        except _core.UnsupportedOperation:
+            raise  # a missing feature, not a failed upload
         except Exception as exc:
             if self.on_send_error is not None:
                 await self.on_send_error(room_id, f"Upload : {type(exc).__name__}: {exc}")
@@ -462,29 +683,39 @@ class ShelltrixClient:
             "info": {"mimetype": mimetype, "size": size},
             "file": {**decrypt_keys, "url": resp.content_uri},
         }
-        await self._send(room_id, "m.room.message", content)
+        await self._send(
+            room_id, "m.room.message", content, operation="sending an image"
+        )
 
     async def logout(self) -> None:
         """Logs out of the device: invalidates the token server-side, then
         erases the credentials and the local store."""
+        # Refused before anything is deleted. Erasing the local credentials
+        # while the token is still valid server-side would strand the session:
+        # the device keeps syncing and the user cannot log it out again.
+        client = self._nio("logging out")
         try:
-            await self.client.logout()
+            await client.logout()
         except Exception:
             pass  # even offline, we still clean up locally
-        await self.client.close()
+        await client.close()
         self.creds.remove()
         remove_store()
 
     async def join_room(self, room_id_or_alias: str) -> None:
-        await self.client.join(room_id_or_alias)
+        await self._nio("joining a room").join(room_id_or_alias)
 
     async def accept_invite(self, room_id: str) -> None:
-        await self.client.join(room_id)
+        await self._nio("accepting an invite").join(room_id)
 
     async def decline_invite(self, room_id: str) -> None:
-        await self.client.room_leave(room_id)
+        await self._nio("declining an invite").room_leave(room_id)
 
     def rooms(self) -> dict[str, Room]:
+        """Every room, named. Synchronous: the UI reads it on every repaint."""
+        if self.client is None:
+            self._refresh_rust_rooms()
+            return dict(self._rooms)
         return {rid: _to_room(room) for rid, room in self.client.rooms.items()}
 
     @property
@@ -499,7 +730,14 @@ class ShelltrixClient:
 
     @property
     def next_batch(self) -> str | None:
-        """Sync pagination token for history backfill (or None before first sync)."""
+        """Sync pagination token for history backfill (or None before first sync).
+
+        Always None on the Rust backend: it does not expose the sync token, and
+        `room_messages` raises rather than paging. The sidebar shows no token
+        there, which is accurate rather than misleading.
+        """
+        if self.client is None:
+            return None
         return getattr(self.client, "next_batch", None)
 
     async def room_messages(self, room_id: str, start: str | None = None, limit: int = 50):
@@ -512,7 +750,7 @@ class ShelltrixClient:
         try:
             from nio import RoomMessagesResponse
 
-            resp = await self.client.room_messages(room_id, start=start, limit=limit)
+            resp = await self._nio("reading history").room_messages(room_id, start=start, limit=limit)
             if not isinstance(resp, RoomMessagesResponse):
                 return None
             events: list[MessageEvent | ImageEvent] = []
@@ -521,6 +759,8 @@ class ShelltrixClient:
                 if normalized is not None:
                     events.append(normalized)
             return MessagePage(events=events, start=resp.start, end=resp.end)
+        except _core.UnsupportedOperation:
+            raise  # the caller must know history is missing, not see "no messages"
         except Exception:
             return None
 
@@ -530,19 +770,23 @@ class ShelltrixClient:
         `confirm_short_auth_string` once both sides see the same
         emojis.
         """
-        await self.client.start_key_verification(user_id, device_id)
+        await self._nio("verifying a device").start_key_verification(user_id, device_id)
 
     async def confirm_sas(self, transaction_id: str) -> None:
         """Confirms that the emojis match (human decision)."""
-        await self.client.confirm_short_auth_string(transaction_id)
+        await self._nio("confirming a verification").confirm_short_auth_string(transaction_id)
 
     async def reject_sas(self, transaction_id: str) -> None:
         """Cancels the verification: the SAS does not match."""
-        await self.client.cancel_key_verification(transaction_id, reject=True)
+        await self._nio("rejecting a verification").cancel_key_verification(
+            transaction_id, reject=True
+        )
 
     async def cancel_sas(self, transaction_id: str) -> None:
         """Cancels the verification (user gave up)."""
-        await self.client.cancel_key_verification(transaction_id, reject=False)
+        await self._nio("cancelling a verification").cancel_key_verification(
+            transaction_id, reject=False
+        )
 
     # ------------------------------------------------------------------
     # Internal callbacks (wired to nio)
@@ -604,7 +848,10 @@ class ShelltrixClient:
             await self.on_typing(room.room_id, event.users)
 
     async def _handle_invite(self, room: MatrixRoom, event: InviteMemberEvent) -> None:
-        if event.state_key != self.client.user_id:
+        # `self.user_id`, not `self.client.user_id`: an invite is the one event
+        # that has to know who we are, and reading it off the transport is the
+        # kind of reach-through that only works on one of the two backends.
+        if event.state_key != self.user_id:
             return
         if self.on_invite is not None:
             await self.on_invite(room.room_id, _to_room(room), event.sender)
@@ -613,15 +860,19 @@ class ShelltrixClient:
         # "Short auth string" (SAS) verification: we NEVER accept and
         # NEVER confirm automatically. We display the emojis on screen and
         # wait for an explicit human confirmation before validating.
+        # Only ever registered on the nio backend, so the client is there.
+        client = self.client
+        if client is None:
+            return
         if isinstance(event, KeyVerificationStart):
-            sas = self.client.key_verifications.get(event.transaction_id)
+            sas = client.key_verifications.get(event.transaction_id)
             if sas is None:
                 return
-            await self.client.accept_key_verification(sas.transaction_id)
+            await client.accept_key_verification(sas.transaction_id)
         elif isinstance(event, KeyVerificationKey):
             # The SAS is established: the emojis are now computable.
             # We pass them to the UI for comparison, without confirming.
-            sas = self.client.key_verifications.get(event.transaction_id)
+            sas = client.key_verifications.get(event.transaction_id)
             if sas is None or self.on_sas_request is None:
                 return
             device = sas.other_olm_device

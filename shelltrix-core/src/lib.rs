@@ -23,6 +23,7 @@
 #![recursion_limit = "512"]
 
 pub mod classify;
+pub mod rooms;
 pub mod runtime;
 pub mod stream;
 pub mod transport;
@@ -273,6 +274,73 @@ fn stop_sync() {
     stream::stop();
 }
 
+/// Restores a saved session and starts the sync loop in the background.
+///
+/// The path the app takes on every run after the first: `Credentials` holds an
+/// access token and a device id, not a password, so [`start_sync`] cannot be
+/// called. Logging in again on each launch would create a new device per run
+/// and eventually trip the homeserver's device limit.
+///
+/// Errors:
+/// - `RuntimeError` if a sync is already running, the homeserver is
+///   unreachable, or the token was refused.
+#[pyfunction]
+#[pyo3(
+    text_signature = "(homeserver: str, user_id: str, device_id: str, access_token: str) -> SyncSummary"
+)]
+fn start_sync_with_token(
+    py: Python<'_>,
+    homeserver: &str,
+    user_id: &str,
+    device_id: &str,
+    access_token: &str,
+) -> PyResult<SyncSummary> {
+    let got = py.detach(|| {
+        runtime::block_on(stream::start_with_token(
+            homeserver,
+            user_id,
+            device_id,
+            access_token,
+        ))
+    });
+    let summary = got.map_err(PyRuntimeError::new_err)?;
+    Ok(SyncSummary {
+        user_id: summary.user_id,
+        device_id: summary.device_id,
+        joined_rooms: summary.joined_rooms,
+    })
+}
+
+/// The current room list, with display names resolved. Empty if no sync runs.
+///
+/// Safe to call as often as the UI likes: the snapshot is only recomputed when
+/// a `/sync` has invalidated it.
+#[pyfunction]
+#[pyo3(text_signature = "() -> list[RoomInfo]")]
+fn rooms_snapshot(py: Python<'_>) -> PyResult<Vec<rooms::RoomInfo>> {
+    Ok(py.detach(|| runtime::block_on(stream::rooms())))
+}
+
+/// Whether at least one `/sync` response has been processed.
+///
+/// The UI waits for this before listing rooms, because a room only arrives with
+/// a sync response — never at construction time.
+#[pyfunction]
+fn first_sync_done() -> bool {
+    stream::first_sync_done()
+}
+
+/// Whether this build can decrypt encrypted rooms.
+///
+/// Not a promise but a warning: the app checks it before trusting a sync on the
+/// Rust backend, because without a crypto store an encrypted room is not
+/// reported as unreadable — it is reported as *empty*, which looks like a quiet
+/// conversation rather than a broken client.
+#[pyfunction]
+fn supports_e2ee() -> bool {
+    cfg!(feature = "e2e-encryption")
+}
+
 /// Version of the compiled core, distinct from the shelltrix app version.
 #[pyfunction]
 fn core_version() -> &'static str {
@@ -285,11 +353,16 @@ fn shelltrix_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(core_version, m)?)?;
     m.add_function(wrap_pyfunction!(login_and_sync, m)?)?;
     m.add_function(wrap_pyfunction!(start_sync, m)?)?;
+    m.add_function(wrap_pyfunction!(start_sync_with_token, m)?)?;
     m.add_function(wrap_pyfunction!(next_event, m)?)?;
     m.add_function(wrap_pyfunction!(stop_sync, m)?)?;
+    m.add_function(wrap_pyfunction!(rooms_snapshot, m)?)?;
+    m.add_function(wrap_pyfunction!(first_sync_done, m)?)?;
+    m.add_function(wrap_pyfunction!(supports_e2ee, m)?)?;
     m.add_class::<SyncMessage>()?;
     m.add_class::<SyncSummary>()?;
     m.add_class::<classify::Event>()?;
+    m.add_class::<rooms::RoomInfo>()?;
     Ok(())
 }
 

@@ -1,9 +1,11 @@
 # ADR 0001 — Move the core to Rust, keep Textual
 
 - **Status**: Accepted. Packaging resolved on 2026-10-02 (see *Resolved —
-  packaging*); the network and E2EE slices are not started.
+  packaging*). The Rust backend is wired into the client and **read-only**:
+  syncing and display work, everything that writes is refused. E2EE is not
+  started.
 - **Date**: 2026-10-02
-- **Scope**: architecture. No code written yet.
+- **Scope**: architecture and migration status.
 
 ## Context
 
@@ -60,8 +62,8 @@ moves.
 Consequences, which are the whole point:
 
 - `widgets.py`, `app.py`, `sidebar.py`, `formatting.py` are untouched.
-- The 238 tests pass unmodified. A test failure means the facade diverged, so
-  the interface is verified 238 times for free, on every run.
+- The tests pass unmodified. A test failure means the facade diverged, so
+  the interface is verified on every run.
 
 This is also why the bench and the tests are the acceptance criteria, and why
 "is the migration finished?" has a numeric answer instead of an impression.
@@ -118,21 +120,61 @@ Migrated so far, each step verified:
 | Step | State |
 |---|---|
 | Packaging question | resolved, abi3 wheel proven in CI |
-| Seam (`shelltrix._core`), backend selection, parity tests | done, 260 tests |
+| Seam (`shelltrix._core`), backend selection, parity tests | done, 323 tests |
 | `/sync` parsing → timeline messages | done, 30x measured |
 | Feasibility against a real homeserver (step 3.0) | done, loop closed |
 | Transport seam: UI free of nio (step 3.1) | done, enforced by a test |
 | Rust transport: login + one /sync from Python (step 3.2a) | done |
-| Rust sync loop as an event stream (step 3.2b) | done, messages only |
+| Rust sync loop as an event stream (step 3.2b) | done |
 | Rust event classifier & dedup (step 3.2c) | done, messages + images + reactions + typing + invites |
 | Sync filter for typing / invites (step 3.2d) | done, explicit m.typing filter added |
+| Token restore instead of password login (step 3.3a) | done, `start_sync_with_token` |
+| Room names resolved in Rust (step 3.3b) | done, `rooms_snapshot` |
+| Seam wired into `ShelltrixClient` (step 3.3c) | done, **read-only**: syncs and displays |
+| Sending (messages, reactions, uploads) | **not started** |
+| Room changes (join, invite, leave), history | **not started** |
 | E2EE (olm store, key management) | **not started** |
-| Rust as the default backend | not started (still opt‑in) |
+| Rust as the default backend | not started (still opt-in) |
 
-The seam is deliberately **not** wired into `matrix_client.py`: the client
-consumes events through matrix-nio callbacks, while a matrix-sdk core emits a
-stream. Bridging the two is a change of architecture, not a substitution of a
-function call, and is left as one reviewed step.
+### What "wired in" means, and what it does not
+
+`ShelltrixClient` now builds a real transport when `SHELLTRIX_CORE=rust`: it
+restores the saved session, drains the core's event queue, resolves room names,
+and dispatches to the same handlers the UI already had. Messages, images,
+reactions, typing and invites all arrive, a quiet room reopens its `/sync`
+instead of going silent, and an account nobody has spoken in still gets its room
+list.
+
+What it does **not** do is write anything. Every operation the core has not
+migrated raises `_core.UnsupportedOperation` naming what the user was trying to
+do and how to get back to matrix-nio. That is a deliberate reversal of the
+earlier draft, which set `self.client = None` for the Rust backend while leaving
+every method reaching for it: `SHELLTRIX_CORE=rust` looked alive and then died
+on first use with `AttributeError: 'NoneType' object has no attribute
+'room_send'`, with no test to notice. A visible refusal is the honest state of a
+half-migration; a silent crash is not.
+
+Two refusals are load-bearing rather than cosmetic:
+
+- A refused send does **not** go through `on_send_error`. That callback means
+  "the server would not accept this", and reporting a missing implementation
+  through it would tell the user their message was rejected when nothing was
+  ever sent.
+- `room_messages()` returns `None` on failure, which the timeline reads as "no
+  messages". So the refusal travels out as an exception instead of becoming an
+  empty room.
+- `logout()` is refused *before* it erases anything. It invalidates the token
+  server-side first; deleting the local copy of a token the core cannot revoke
+  would leave the session alive and unloggable.
+
+Encrypted rooms are a related gap with the same shape: `supports_e2ee()` is
+`False`, so the client says so at startup rather than letting them appear as
+empty rooms.
+
+The wiring is tested with a fake core (`tests/test_rust_backend.py`), not a
+homeserver, because the bug above is a wiring bug and a test needing a
+homeserver is a test nobody runs. The core's own behaviour stays covered by its
+Rust tests and by `tests/test_rust_core.py`.
 
 ## Step 3.0 — feasibility spike (done 2026-10-02)
 
@@ -253,16 +295,45 @@ client* while the loop runs arrives within the timeout, neither is replayed,
 and a quiet room reads as `None` rather than an error. Script:
 `~/.spike/stream-e2e.py`.
 
-Not yet covered: only `m.room.message` is normalized. Images, reactions, typing,
-invites and SAS flows still have to cross the same seam before the transport can
-replace matrix-nio's section of `matrix_client.py`.
-
-What is left is replacing `matrix_client.py`'s nio section with a matrix-sdk
-transport emitting the dataclasses above — one reviewed step, still not taken.
+Not yet covered at this step: only `m.room.message` was normalized. Images,
+reactions, typing and invites now cross the same seam too (step 3.2c), and
+`matrix_client.py` consumes them (step 3.3c).
 
 Recipe to reproduce: a Synapse venv (`matrix-synapse`, Python 3.12, SQLite),
 `register_new_matrix_user -c homeserver.yaml -a`, then a cargo bin depending
 on `matrix-sdk = "0.19"`.
+
+### Step 3.3 — the client drives the core, for reading
+
+Three things had to be true before the facade could run on Rust at all.
+
+**The token, not a password.** The login path of 3.2a took a password because
+that is what a fresh spike has. A real `shelltrix` has a saved access token and
+device ID, and asking for the password again would have been a regression in the
+eyes of the one person using it. `start_sync_with_token` restores the session
+instead.
+
+**Room names, resolved where the members are.** nio hands out
+`MatrixRoom` objects with a computed `display_name`, and the UI reads that
+directly. The core therefore computes names rather than shipping raw room IDs:
+m.room.name, then the canonical alias, then matrix-sdk's "Alice and Bob" form,
+and only then the ID. The algorithm lives in `rooms.rs`, and the fallback order
+is covered by Rust tests because it is the part a user notices when it is wrong.
+Events that arrive before the room is named still get a `Room` — showing a raw
+ID for a moment beats dropping the message that named it.
+
+**First sync asked, not inferred.** The client fires `on_first_sync` when the
+core reports its initial `/sync` complete, rather than when the first event
+arrives. On an account nobody has spoken in, no event ever arrives, and a
+room-list refresh keyed off events would leave the sidebar blank forever on a
+perfectly healthy connection. It is also asked after every poll, not after every
+event, so a quiet long poll does not re-announce the sync and repaint the room
+list every 30 seconds.
+
+Reconnection needed one transport-specific adjustment. matrix-nio's loop
+recovers by calling `sync()` again; the core owns its own sync task, so when its
+queue reports the loop ended the client tears it down and starts a new one. Same
+contract and same exponential backoff as the nio path, one different step.
 
 ## Consequences
 

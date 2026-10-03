@@ -1,9 +1,16 @@
-"""Global fixtures: isolate the SQLite cache and the system keyring.
+"""Global fixtures: isolate the SQLite cache, the olm store, the keyring.
 
 Tests that instantiate `ChatScreen` create a `MessageCache` (whose default
 directory is `~/.config/shelltrix/cache`). We redirect `CONFIG_DIR` of the
 `cache` module to a temporary directory so that tests never write into the
 user's real configuration directory.
+
+The olm store gets the same treatment, for a worse reason: `ShelltrixClient.stop()`
+calls `encrypt_store()`, which reads every file in the store directory and
+rewrites it encrypted. Against the real store that is a multi-gigabyte read and
+write per test — on one machine here it was a 1.6 GB SQLite file, so a test that
+merely stops a client took minutes and gigabytes of RAM. Redirecting the store
+constants keeps the suite fast and leaves the user's session keys alone.
 
 The system keyring is replaced by an in-memory store: without this, a test
 that encrypts the store drops the session E2EE key into the user's keyring,
@@ -19,6 +26,23 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_cache_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("shelltrix.cache.CONFIG_DIR", tmp_path / "config")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_store_dir(tmp_path, monkeypatch):
+    """Points the store encryption paths at a temporary directory.
+
+    `config.py` derives these from `CONFIG_DIR` at import time, so each one
+    has to be patched rather than just the root.
+    """
+    from shelltrix import config
+
+    store = tmp_path / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config, "STORE_DIR", store)
+    monkeypatch.setattr(config, "STORE_ENC_MARKER", store / ".shelltrix-encrypted")
+    monkeypatch.setattr(config, "STORE_KEY_FILE", tmp_path / "config" / "store.key")
     yield
 
 

@@ -26,6 +26,11 @@ serde_json = "1"
 # The transport. matrix-sdk brings its own Tokio, so `rt-multi-thread` here is
 # about the thread that owns the runtime, not about concurrency of our own.
 matrix-sdk = "0.19"
+# matrix-sdk 0.19.1. Needed directly for two things it does not re-export:
+# `RoomLoadSettings` (restoring a saved session) and, with it, the `SessionMeta`
+# half of `MatrixSession`. Pinned to the version matrix-sdk resolves so the two
+# never disagree about a type.
+matrix-sdk-base = "=0.19.1"
 # Pinned to the version matrix-sdk 0.19.1 resolves, and needed directly for the
 # `/sync` filter: Synapse only sends `m.typing` when the filter names it, and
 # `SyncSettings::filter` takes ruma's type rather than raw JSON. matrix-sdk
@@ -35,6 +40,11 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [features]
 extension-module = ["pyo3/extension-module"]
+# Turns on matrix-sdk's crypto. Off by default: it is a large dependency and
+# nothing in the core uses it yet, so enabling it would ship an Olm machine
+# with no key store and no way to verify anything — the worst of both. `cargo
+# build --features e2e-encryption` is the migration's target, not a default.
+e2e-encryption = ["matrix-sdk/e2e-encryption"]
 default = []
 
 [profile.release]

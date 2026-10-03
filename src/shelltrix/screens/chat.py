@@ -350,7 +350,10 @@ class ChatScreen(Screen):
         room = None
         if self.active_room_id:
             room = self.client.rooms().get(self.active_room_id)
-        own_id = getattr(getattr(self.client, "client", None), "user_id", None) or ""
+        # `client.user_id`, not `client.client.user_id`: the latter reaches
+        # through the transport into matrix-nio, so it is empty on the Rust
+        # backend and the sidebar would not highlight your own messages.
+        own_id = self.client.user_id
         # Both frames share the width of #sb-room: without its own
         # border, SESSION has exactly the same space available.
         inner = self._panel_content_width("#sb-room", self._right_width - 2)

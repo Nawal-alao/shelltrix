@@ -18,16 +18,20 @@
 //! UI, which is a separate decision from the transport.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::config::SyncSettings;
-use matrix_sdk::{Client, LoopCtrl};
+use matrix_sdk::{Client, LoopCtrl, SessionMeta, SessionTokens};
+use matrix_sdk_base::store::RoomLoadSettings;
 use ruma::api::client::filter::FilterDefinition;
 use ruma::api::client::sync::sync_events::v3::Filter;
 use tokio::sync::mpsc;
 
 use crate::classify;
+use crate::rooms::{self, RoomInfo};
 
 /// The queue Python drains, independent of where the events come from.
 ///
@@ -48,6 +52,22 @@ struct Queue {
     /// Why the producer stopped, if it did. Read when the channel closes, so
     /// Python learns "the connection dropped" instead of waiting forever.
     last_error: Arc<Mutex<Option<String>>>,
+    /// The last known room list, and whether it is out of date.
+    ///
+    /// Python calls `rooms()` on every sidebar repaint, so the snapshot is taken
+    /// here — once per sync that changed a room — and read back from memory.
+    rooms: Mutex<Vec<RoomInfo>>,
+    /// Set when a sync response carried rooms, cleared when they are re-read.
+    ///
+    /// Recomputing after *every* sync would walk every member of every room
+    /// thirty seconds forever, to learn nothing: an idle account syncs empty.
+    rooms_stale: AtomicBool,
+    /// Whether at least one `/sync` response has been received.
+    ///
+    /// Separate from the queue being non-empty on purpose. A quiet account
+    /// produces no events, and "no event yet" is not "not synced": without this
+    /// the UI would wait forever for a room list that has in fact arrived.
+    first_sync: AtomicBool,
 }
 
 impl Queue {
@@ -58,6 +78,9 @@ impl Queue {
             rx: Arc::new(tokio::sync::Mutex::new(rx)),
             seen: Arc::new(Mutex::new(HashSet::new())),
             last_error: Arc::new(Mutex::new(None)),
+            rooms: Mutex::new(Vec::new()),
+            rooms_stale: AtomicBool::new(true),
+            first_sync: AtomicBool::new(false),
         })
     }
 
@@ -108,6 +131,45 @@ impl Queue {
             *tx = None;
         }
     }
+
+    /// Marks the room list as needing a re-read.
+    ///
+    /// Called for every sync response that carried rooms. Marking rather than
+    /// computing keeps the sync callback from doing per-room member lookups,
+    /// which would stall the `/sync` loop for a UI that repaints at 60 Hz.
+    fn mark_stale(&self, carried_rooms: bool) {
+        self.first_sync.store(true, Ordering::SeqCst);
+        if carried_rooms {
+            self.rooms_stale.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Re-reads the room list if a sync invalidated it.
+    async fn refresh_rooms(&self, client: &Client) {
+        if !self.rooms_stale.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let fresh = rooms::snapshot(client).await;
+        if let Ok(mut rooms) = self.rooms.lock() {
+            *rooms = fresh;
+        } else {
+            // Poisoned: put the flag back, so the next sync tries again rather
+            // than leaving Python with a permanently stale, empty room list.
+            self.rooms_stale.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// The room list, recomputed first if a sync has invalidated it.
+    ///
+    /// Recomputing on read rather than only on sync is what lets Python call
+    /// this the moment it needs a name, without a stale one.
+    async fn rooms(&self, client: &Client) -> Vec<RoomInfo> {
+        self.refresh_rooms(client).await;
+        self.rooms
+            .lock()
+            .map(|rooms| rooms.clone())
+            .unwrap_or_default()
+    }
 }
 
 struct StreamState {
@@ -130,6 +192,86 @@ fn stream() -> &'static Mutex<Option<StreamState>> {
 /// - anything [`crate::transport::login_and_sync`] can return, plus the loop
 ///   failing to spawn.
 pub async fn start(homeserver: &str, user: &str, password: &str) -> Result<StreamSummary, String> {
+    let client = build_client(homeserver).await?;
+    let login = client
+        .matrix_auth()
+        .login_username(user, password)
+        .initial_device_display_name("shelltrix")
+        .send()
+        .await
+        .map_err(|e| format!("login as {user} failed: {e}"))?;
+    spawn(
+        client,
+        StreamSummary {
+            user_id: login.user_id.to_string(),
+            device_id: login.device_id.to_string(),
+            joined_rooms: Vec::new(),
+        },
+    )
+    .await
+}
+
+/// Restores a saved session instead of logging in, then starts the loop.
+///
+/// This is the path the app actually takes: `Credentials` holds an access token
+/// and a device id from a previous run, not a password, so the password entry
+/// above is only reachable from a fresh login.
+///
+/// Errors:
+/// - "a sync is already running" if one is.
+/// - "the saved session for {user} was refused: …" if the token has been
+///   revoked or expired. Distinct from a network failure so the caller can tell
+///   "log in again" from "try later".
+pub async fn start_with_token(
+    homeserver: &str,
+    user_id: &str,
+    device_id: &str,
+    access_token: &str,
+) -> Result<StreamSummary, String> {
+    let client = build_client(homeserver).await?;
+    let Ok(user) = user_id.parse() else {
+        return Err(format!("{user_id:?} is not a Matrix user id"));
+    };
+    client
+        .matrix_auth()
+        .restore_session(
+            MatrixSession {
+                meta: SessionMeta {
+                    user_id: user,
+                    // Device ids are opaque to the protocol — no character is
+                    // illegal — so this cannot fail and is not checked.
+                    device_id: device_id.into(),
+                },
+                tokens: SessionTokens {
+                    access_token: access_token.to_owned(),
+                    refresh_token: None,
+                },
+            },
+            RoomLoadSettings::default(),
+        )
+        .await
+        .map_err(|e| format!("the saved session for {user_id} was refused: {e}"))?;
+    spawn(
+        client,
+        StreamSummary {
+            user_id: user_id.to_owned(),
+            device_id: device_id.to_owned(),
+            joined_rooms: Vec::new(),
+        },
+    )
+    .await
+}
+
+async fn build_client(homeserver: &str) -> Result<Client, String> {
+    Client::builder()
+        .homeserver_url(homeserver)
+        .build()
+        .await
+        .map_err(|e| format!("cannot build a client for {homeserver}: {e}"))
+}
+
+/// Claims the slot and starts the loop for an already-authenticated client.
+async fn spawn(client: Client, mut summary: StreamSummary) -> Result<StreamSummary, String> {
     // Claim the slot with a lock we do NOT hold across the login: the network
     // calls below must not make `stop` or another `start` wait for them.
     {
@@ -141,43 +283,16 @@ pub async fn start(homeserver: &str, user: &str, password: &str) -> Result<Strea
         }
     }
 
-    let client = Client::builder()
-        .homeserver_url(homeserver)
-        .build()
-        .await
-        .map_err(|e| format!("cannot build a client for {homeserver}: {e}"))?;
-
-    let login = client
-        .matrix_auth()
-        .login_username(user, password)
-        .initial_device_display_name("shelltrix")
-        .send()
-        .await
-        .map_err(|e| format!("login as {user} failed: {e}"))?;
-
     let queue = Queue::new();
     let task = tokio::spawn(run_sync(client.clone(), Arc::clone(&queue)));
 
-    let mut joined_rooms: Vec<String> = client
+    let mut rooms: Vec<String> = client
         .rooms()
         .iter()
         .map(|r| r.room_id().to_string())
         .collect();
-    joined_rooms.sort();
-
-    let summary = StreamSummary {
-        user_id: login.user_id.to_string(),
-        device_id: login.device_id.to_string(),
-        joined_rooms: {
-            let mut rooms: Vec<String> = client
-                .rooms()
-                .iter()
-                .map(|r| r.room_id().to_string())
-                .collect();
-            rooms.sort();
-            rooms
-        },
-    };
+    rooms.sort();
+    summary.joined_rooms = rooms;
 
     let mut slot = stream()
         .lock()
@@ -227,6 +342,34 @@ pub fn stop() {
     }
 }
 
+/// The current room list, or empty when no sync is running.
+pub async fn rooms() -> Vec<RoomInfo> {
+    let state = match stream().lock() {
+        Ok(slot) => slot
+            .as_ref()
+            .map(|state| (Arc::clone(&state.queue), state.client.clone())),
+        Err(_) => None,
+    };
+    match state {
+        Some((queue, client)) => queue.rooms(&client).await,
+        None => Vec::new(),
+    }
+}
+
+/// Whether at least one `/sync` response has been processed.
+///
+/// The UI waits for this to list rooms. Reporting it from the queue rather than
+/// inferring it from "an event arrived" matters: an account with nothing to say
+/// would otherwise never be declared synced, and the room list would stay blank
+/// forever on a perfectly healthy connection.
+pub fn first_sync_done() -> bool {
+    stream()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|state| Arc::clone(&state.queue)))
+        .is_some_and(|queue| queue.first_sync.load(Ordering::SeqCst))
+}
+
 /// The key that identifies an event for de-duplication.
 ///
 /// Timeline events carry a server-assigned `event_id` that is unique, so it is
@@ -268,7 +411,8 @@ async fn run_sync(client: Client, queue: Arc<Queue>) {
                 let queue = Arc::clone(&for_loop);
                 let user_id = for_user.clone();
                 async move {
-                    push_events(&queue, &user_id, &response);
+                    let carried = push_events(&queue, &user_id, &response);
+                    queue.mark_stale(carried);
                     LoopCtrl::Continue
                 }
             },
@@ -281,7 +425,16 @@ async fn run_sync(client: Client, queue: Arc<Queue>) {
     }
 }
 
-fn push_events(queue: &Arc<Queue>, user_id: &str, response: &matrix_sdk::sync::SyncResponse) {
+/// Pushes one response's events, and reports whether it carried any room.
+///
+/// The return value is what tells the queue its cached room list is out of
+/// date. Synapse sends only the rooms that changed, so an idle account syncs
+/// empty and nothing needs re-resolving.
+fn push_events(
+    queue: &Arc<Queue>,
+    user_id: &str,
+    response: &matrix_sdk::sync::SyncResponse,
+) -> bool {
     for (room_id, update) in &response.rooms.joined {
         for event in &update.timeline.events {
             // `kind.raw()` covers all three cases — decrypted, unable to
@@ -313,6 +466,13 @@ fn push_events(queue: &Arc<Queue>, user_id: &str, response: &matrix_sdk::sync::S
             queue.push(classified);
         }
     }
+
+    // Left rooms still appear here, and the sidebar drops them by membership,
+    // so their presence has to count as a change or a `/leave` would leave a
+    // stale room on screen until the next unrelated event.
+    !response.rooms.joined.is_empty()
+        || !response.rooms.invited.is_empty()
+        || !response.rooms.left.is_empty()
 }
 
 /// Decodes one raw Matrix event into JSON.

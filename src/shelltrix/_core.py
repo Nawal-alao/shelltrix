@@ -5,13 +5,16 @@ dependency. The Rust core (`shelltrix-core`, a PyO3 extension) is opt-in and
 installed separately: `SHELLTRIX_CORE=rust`.
 
 This module is the seam between the two, and it is deliberately small. It
-holds the *contract* of the first migrated slice — see
-`docs/decisions/0001-rust-core.md` — and nothing else. It is not wired into
-`matrix_client.py` yet, and that is not an oversight: the client consumes
-events through matrix-nio callbacks (`add_event_callback`), while a Rust core
-built on matrix-sdk emits a stream. Bridging the two is a change of
-architecture, not a substitution of a function call, so it will be done as
-one reviewed step rather than half-wired.
+holds the *contract* of the migrated slices — see
+`docs/decisions/0001-rust-core.md` — and nothing else.
+
+Where the Rust core stands today: it **receives**. It syncs, classifies events
+and resolves room names, which is everything `matrix_client.py` needs to display
+a live conversation. It does not yet **send**, and it does not yet decrypt:
+`supports_e2ee()` reports the second, and
+[`UnsupportedOperation`] reports the first. So the honest position is a working
+read-only client, not a replacement for matrix-nio — and the difference is
+raised at the call rather than left to surface as a missing attribute.
 
 Both backends implement `parse_sync_messages` with identical semantics, which
 `tests/test_rust_core.py` verifies on the same payloads. Parity is what makes
@@ -34,10 +37,33 @@ _BACKEND_ENV: Final = "SHELLTRIX_CORE"
 _PYTHON: Final = "python"
 _RUST: Final = "rust"
 
+# How long `matrix_client`'s polling loop waits for one event before checking
+# that it is still alive. Long enough that an idle client wakes rarely, short
+# enough that a shutdown is not held up by it.
+EVENT_WAIT_MS: Final = 30_000
+
 try:  # optional, never a prerequisite
     import shelltrix_core as _rust
 except ImportError:  # pragma: no cover - depends on the machine
     _rust = None
+
+
+class UnsupportedOperation(NotImplementedError):
+    """The selected core does not implement this operation yet.
+
+    A `NotImplementedError`, so a caller that only cares that it failed does not
+    have to know about the migration. It is raised *at the call*, naming the
+    operation, because the alternative — an attribute error from a client that
+    was never built — is a crash the user cannot act on.
+    """
+
+
+def _require_rust(operation: str) -> None:
+    if _rust is None:
+        raise RuntimeError(
+            f"{operation} needs the Rust core, which is not installed "
+            "(pip install shelltrix-core)"
+        )
 
 
 @dataclass(frozen=True)
@@ -83,7 +109,7 @@ def login_and_sync(homeserver: str, user: str, password: str) -> SyncSummary:
             refused, or `/sync` fails.
     """
     if _rust is None:
-        raise RuntimeError("the Rust core is not installed (pip install shelltrix-core)")
+        _require_rust("a one-off login and sync")
     summary = _rust.login_and_sync(homeserver, user, password)
     return SyncSummary(
         user_id=summary.user_id,
@@ -171,7 +197,7 @@ def start_sync(homeserver: str, user: str, password: str) -> SyncSummary:
     returns, so the loop has to be owned by the transport as a task.
     """
     if _rust is None:
-        raise RuntimeError("the Rust core is not installed (pip install shelltrix-core)")
+        _require_rust("syncing by password")
     summary = _rust.start_sync(homeserver, user, password)
     return SyncSummary(
         user_id=summary.user_id,
@@ -206,7 +232,7 @@ def next_event(timeout_ms: int) -> StreamEvent | None:
     instead of silently going quiet.
     """
     if _rust is None:
-        raise RuntimeError("the Rust core is not installed (pip install shelltrix-core)")
+        _require_rust("the sync stream")
     event = _rust.next_event(timeout_ms)
     return None if event is None else _to_stream_event(event)
 
@@ -215,6 +241,83 @@ def stop_sync() -> None:
     """Stops the sync loop. Safe when none is running."""
     if _rust is not None:
         _rust.stop_sync()
+
+
+@dataclass(frozen=True)
+class RoomSnapshot:
+    """One room, named, as the Rust core resolved it.
+
+    `display_name` is never empty — the Rust side falls back to the room id — so
+    a sidebar row can always be labelled.
+    """
+
+    room_id: str
+    display_name: str
+    name: str = ""
+    user_names: Mapping[str, str] = field(default_factory=dict)
+
+
+def start_sync_with_token(
+    homeserver: str, user_id: str, device_id: str, access_token: str
+) -> SyncSummary:
+    """Restores a saved session and starts the sync loop in the background.
+
+    The path the app takes on every run after the first: `Credentials` holds an
+    access token and a device id, not a password. Logging in again instead would
+    mint a new device per launch and eventually trip the homeserver's device
+    limit.
+
+    Raises:
+        RuntimeError: if the token was refused, the homeserver is unreachable,
+            or a sync is already running.
+    """
+    _require_rust("syncing with a saved session")
+    summary = _rust.start_sync_with_token(homeserver, user_id, device_id, access_token)
+    return SyncSummary(
+        user_id=summary.user_id,
+        device_id=summary.device_id,
+        joined_rooms=tuple(summary.joined_rooms),
+    )
+
+
+def rooms_snapshot() -> tuple[RoomSnapshot, ...]:
+    """The current room list, with display names resolved.
+
+    Empty when no sync is running. Safe to call as often as the UI repaints: the
+    Rust side recomputes only when a `/sync` has invalidated its cache.
+    """
+    _require_rust("listing rooms")
+    return tuple(
+        RoomSnapshot(
+            room_id=room.room_id,
+            display_name=room.display_name,
+            name=room.name,
+            user_names=dict(room.user_names),
+        )
+        for room in _rust.rooms_snapshot()
+    )
+
+
+def first_sync_done() -> bool:
+    """Whether at least one `/sync` response has been processed.
+
+    The UI needs this before listing rooms: rooms arrive with a sync response,
+    never at construction time. Distinct from "an event arrived", because a
+    quiet account produces none and would otherwise never be declared synced.
+    """
+    _require_rust("the sync state")
+    return _rust.first_sync_done()
+
+
+def supports_e2ee() -> bool:
+    """Whether this build of the Rust core can decrypt encrypted rooms.
+
+    False today. It is asked rather than assumed because the failure mode is
+    silent in the worst way: without a crypto store an encrypted room is not
+    reported as unreadable, it is reported as *empty*, which looks like a quiet
+    conversation rather than a broken client.
+    """
+    return _rust is not None and _rust.supports_e2ee()
 
 
 def rust_available() -> bool:
