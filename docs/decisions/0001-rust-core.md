@@ -124,8 +124,10 @@ Migrated so far, each step verified:
 | Transport seam: UI free of nio (step 3.1) | done, enforced by a test |
 | Rust transport: login + one /sync from Python (step 3.2a) | done |
 | Rust sync loop as an event stream (step 3.2b) | done, messages only |
+| Rust event classifier & dedup (step 3.2c) | done, messages + images + reactions + typing + invites |
+| Sync filter for typing / invites (step 3.2d) | done, explicit m.typing filter added |
 | E2EE (olm store, key management) | **not started** |
-| Rust as the default backend | not started |
+| Rust as the default backend | not started (still opt‑in) |
 
 The seam is deliberately **not** wired into `matrix_client.py`: the client
 consumes events through matrix-nio callbacks, while a matrix-sdk core emits a
