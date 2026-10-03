@@ -23,21 +23,11 @@ use std::time::Duration;
 
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::{Client, LoopCtrl};
+use ruma::api::client::filter::FilterDefinition;
+use ruma::api::client::sync::sync_events::v3::Filter;
 use tokio::sync::mpsc;
 
-use crate::message_fields;
-
-/// One event handed to Python, with the room it belongs to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamEvent {
-    pub room_id: String,
-    pub sender: String,
-    pub origin_server_ts: u64,
-    pub event_id: String,
-    pub msgtype: String,
-    pub body: String,
-    pub mentions: bool,
-}
+use crate::classify;
 
 /// The queue Python drains, independent of where the events come from.
 ///
@@ -47,11 +37,11 @@ struct Queue {
     /// `None` once the producer is gone. Dropping the sender is what closes
     /// the channel, and that is how a consumer learns the loop ended — so the
     /// sender is held in an `Option` rather than dropped with the struct.
-    tx: Mutex<Option<mpsc::UnboundedSender<StreamEvent>>>,
+    tx: Mutex<Option<mpsc::UnboundedSender<classify::Event>>>,
     /// Behind its own async lock so that `pop` can wait WITHOUT holding the
     /// global lock: otherwise a wait would block `stop`, and `stop` blocking
     /// is how a shutdown hangs.
-    rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<StreamEvent>>>,
+    rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<classify::Event>>>,
     /// Events already delivered, so a resumed sync does not replay the initial
     /// timeline the caller has seen.
     seen: Arc<Mutex<HashSet<String>>>,
@@ -75,11 +65,12 @@ impl Queue {
     ///
     /// De-duplicating here rather than in the sync loop means the guarantee
     /// holds for every producer, and it is testable without a network.
-    fn push(&self, event: StreamEvent) {
+    fn push(&self, event: classify::Event) {
+        let key = dedup_key(&event);
         let Ok(mut seen) = self.seen.lock() else {
             return;
         };
-        if !seen.insert(event.event_id.clone()) {
+        if !seen.insert(key) {
             return;
         }
         drop(seen);
@@ -90,7 +81,7 @@ impl Queue {
         }
     }
 
-    async fn pop(&self, timeout_ms: u64) -> Result<Option<StreamEvent>, String> {
+    async fn pop(&self, timeout_ms: u64) -> Result<Option<classify::Event>, String> {
         let received = {
             let mut rx = self.rx.lock().await;
             tokio::time::timeout(Duration::from_millis(timeout_ms), rx.recv()).await
@@ -209,7 +200,7 @@ pub async fn start(homeserver: &str, user: &str, password: &str) -> Result<Strea
 /// `None` means the wait expired, which is the normal outcome most of the
 /// time: a quiet room produces nothing. It is not an error, and the caller must
 /// not treat it as a disconnect.
-pub async fn next(timeout_ms: u64) -> Result<Option<StreamEvent>, String> {
+pub async fn next(timeout_ms: u64) -> Result<Option<classify::Event>, String> {
     // Take the queue out from under the global lock, then let it go before
     // waiting: `stop` must stay responsive while `next` is parked.
     let queue = {
@@ -236,18 +227,52 @@ pub fn stop() {
     }
 }
 
+/// The key that identifies an event for de-duplication.
+///
+/// Timeline events carry a server-assigned `event_id` that is unique, so it is
+/// the whole key on its own. Typing notifications and invites have no such id,
+/// and an empty string as their key would collapse every one of them in the
+/// session into the first: the "typing stopped" notification would be swallowed
+/// and the indicator would stay lit forever. Their raw payload stands in
+/// instead, which still drops the repeats Synapse resends on every sync while
+/// letting a genuine change through.
+fn dedup_key(event: &classify::Event) -> String {
+    if !event.event_id.is_empty() {
+        return event.event_id.clone();
+    }
+    format!("{}:{}:{}", event.kind, event.room_id, event.source)
+}
+
+fn sync_filter() -> FilterDefinition {
+    // Only `ephemeral` is named. The others are left absent on purpose: Synapse
+    // reads a missing `types` as "every type", whereas an empty list would mean
+    // "none" and would silently drop the timeline too.
+    serde_json::from_value::<FilterDefinition>(serde_json::json!({
+        "room": {"ephemeral": {"types": ["m.typing"]}}
+    }))
+    .expect("the sync filter is a literal in this file")
+}
+
 /// The sync loop. Never returns on its own: it runs until `stop`, the process
 /// exits, or the homeserver becomes unreachable for good.
 async fn run_sync(client: Client, queue: Arc<Queue>) {
     let for_loop = Arc::clone(&queue);
+    // An invite is the one event addressed to a specific user: the stripped
+    // state holds every member, and only ours is ours to announce.
+    let user_id = client.user_id().map(|u| u.to_string()).unwrap_or_default();
+    let for_user = user_id.clone();
     let result = client
-        .sync_with_callback(SyncSettings::default(), move |response| {
-            let queue = Arc::clone(&for_loop);
-            async move {
-                push_events(&queue, &response);
-                LoopCtrl::Continue
-            }
-        })
+        .sync_with_callback(
+            SyncSettings::default().filter(Filter::FilterDefinition(sync_filter())),
+            move |response| {
+                let queue = Arc::clone(&for_loop);
+                let user_id = for_user.clone();
+                async move {
+                    push_events(&queue, &user_id, &response);
+                    LoopCtrl::Continue
+                }
+            },
+        )
         .await;
 
     if let Err(error) = result {
@@ -256,35 +281,48 @@ async fn run_sync(client: Client, queue: Arc<Queue>) {
     }
 }
 
-fn push_events(queue: &Queue, response: &matrix_sdk::sync::SyncResponse) {
+fn push_events(queue: &Arc<Queue>, user_id: &str, response: &matrix_sdk::sync::SyncResponse) {
     for (room_id, update) in &response.rooms.joined {
         for event in &update.timeline.events {
             // `kind.raw()` covers all three cases — decrypted, unable to
             // decrypt, plaintext — so an encrypted room needs no second path.
-            // `json().get()` is the raw JSON text; parsing it here keeps the
-            // field extraction in one place, shared with `parse_sync_messages`.
-            let Ok(value) =
-                serde_json::from_str::<serde_json::Value>(event.kind.raw().json().get())
-            else {
-                continue;
-            };
-            let Some(object) = value.as_object() else {
-                continue;
-            };
-            let Some(fields) = message_fields(object) else {
-                continue;
-            };
-            queue.push(StreamEvent {
-                room_id: room_id.to_string(),
-                sender: fields.sender,
-                origin_server_ts: fields.origin_server_ts,
-                event_id: fields.event_id,
-                msgtype: fields.msgtype,
-                body: fields.body,
-                mentions: fields.mentions,
-            });
+            if let Some(event) = parse(event.kind.raw().json().get()) {
+                if let Some(classified) = classify::timeline_event(room_id.as_str(), &event) {
+                    queue.push(classified);
+                }
+            }
+        }
+        // Typing lives in the ephemeral section, not the timeline: it is never
+        // stored, so a reader that only looks at timelines never sees anyone.
+        for event in &update.ephemeral {
+            if let Some(event) = parse(event.json().get()) {
+                if let Some(classified) = classify::ephemeral_event(room_id.as_str(), &event) {
+                    queue.push(classified);
+                }
+            }
         }
     }
+    for (room_id, update) in &response.rooms.invited {
+        let stripped: Vec<serde_json::Value> = update
+            .invite_state
+            .events
+            .iter()
+            .filter_map(|e| parse(e.json().get()))
+            .collect();
+        if let Some(classified) = classify::invite(room_id.as_str(), &stripped, user_id) {
+            queue.push(classified);
+        }
+    }
+}
+
+/// Decodes one raw Matrix event into JSON.
+///
+/// matrix-sdk keeps `Raw` events unparsed on purpose: parsing costs allocations
+/// the SDK does not want to pay for events nobody reads, and we read a room's
+/// whole timeline. Taking the text rather than the typed event means the three
+/// shapes it arrives in — timeline, ephemeral, stripped — all go through here.
+fn parse(json: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(json).ok()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -312,6 +350,26 @@ mod tests {
         );
     }
 
+    /// Synapse sends `m.typing` only when the sync filter names it, and sends
+    /// nothing at all otherwise — no error, no warning. The typing indicator
+    /// would simply never appear, so the filter is asserted here rather than
+    /// left to a manual check nobody repeats.
+    #[test]
+    fn the_sync_filter_asks_for_typing() {
+        let json = serde_json::to_value(sync_filter()).unwrap();
+        assert_eq!(
+            json["room"]["ephemeral"]["types"],
+            serde_json::json!(["m.typing"]),
+            "the filter must name the typing event, got {json}"
+        );
+        // Only `ephemeral` may be constrained. An empty `types` list elsewhere
+        // would read as "no event types" and silently empty the timeline.
+        assert!(
+            json["room"]["timeline"]["types"].is_null(),
+            "the timeline must stay unfiltered, got {json}"
+        );
+    }
+
     #[test]
     fn stop_is_safe_to_call_repeatedly() {
         stop();
@@ -322,8 +380,9 @@ mod tests {
     /// The reason this is worth a test: `next` parks while holding locks. If
     /// it held the *global* one, `stop` could never take effect until the wait
     /// expired, which is how quitting the app would hang.
-    fn event(event_id: &str) -> StreamEvent {
-        StreamEvent {
+    fn event(event_id: &str) -> classify::Event {
+        classify::Event {
+            kind: classify::KIND_MESSAGE.to_owned(),
             room_id: "!r:hs".to_owned(),
             sender: "@alice:hs".to_owned(),
             origin_server_ts: 1_700_000_000_000,
@@ -331,6 +390,16 @@ mod tests {
             msgtype: "m.text".to_owned(),
             body: format!("body of {event_id}"),
             mentions: false,
+            ..classify::Event::default()
+        }
+    }
+
+    fn typing(source: &str) -> classify::Event {
+        classify::Event {
+            kind: classify::KIND_TYPING.to_owned(),
+            room_id: "!r:hs".to_owned(),
+            source: source.to_owned(),
+            ..classify::Event::default()
         }
     }
 
@@ -359,6 +428,59 @@ mod tests {
         });
         let got = crate::runtime::block_on(async { queue.pop(20).await.unwrap() });
         assert!(got.is_none(), "the repeat must be dropped, not queued");
+    }
+
+    /// Typing has no event id, so it once shared the key `""` with every other
+    /// id-less event. The second push was then read as a repeat and dropped,
+    /// which is why "stopped typing" never arrived and the indicator could not
+    /// be cleared.
+    #[test]
+    fn an_id_less_event_is_not_mistaken_for_a_repeat() {
+        let queue = Queue::new();
+        queue.push(typing(r#"{"user_ids":["@bob:hs"]}"#));
+        queue.push(typing(r#"{"user_ids":[]}"#));
+        crate::runtime::block_on(async {
+            let started = queue.pop(50).await.unwrap().unwrap();
+            let stopped = queue.pop(50).await.unwrap().unwrap();
+            assert_eq!(started.source, r#"{"user_ids":["@bob:hs"]}"#);
+            assert_eq!(stopped.source, r#"{"user_ids":[]}"#);
+        });
+    }
+
+    /// The other half of that bargain: Synapse resends an unchanged typing
+    /// state on every sync, and each resend must not wake the UI up again.
+    #[test]
+    fn an_unchanged_id_less_event_is_still_de_duplicated() {
+        let queue = Queue::new();
+        queue.push(typing(r#"{"user_ids":["@bob:hs"]}"#));
+        queue.push(typing(r#"{"user_ids":["@bob:hs"]}"#));
+        crate::runtime::block_on(async {
+            assert!(queue.pop(50).await.unwrap().is_some());
+        });
+        let got = crate::runtime::block_on(async { queue.pop(20).await.unwrap() });
+        assert!(got.is_none(), "the resend must be dropped, not queued");
+    }
+
+    /// An invite is id-less too, and two invites to different rooms are two
+    /// different things to announce.
+    #[test]
+    fn id_less_events_in_different_rooms_are_different_events() {
+        let queue = Queue::new();
+        for room in ["!a:hs", "!b:hs"] {
+            queue.push(classify::Event {
+                kind: classify::KIND_INVITE.to_owned(),
+                room_id: room.to_owned(),
+                ..classify::Event::default()
+            });
+        }
+        crate::runtime::block_on(async {
+            let first = queue.pop(50).await.unwrap().unwrap();
+            let second = queue.pop(50).await.unwrap().unwrap();
+            assert_eq!(
+                [first.room_id.as_str(), second.room_id.as_str()],
+                ["!a:hs", "!b:hs"]
+            );
+        });
     }
 
     /// A quiet room is the common case and must not look like a failure.

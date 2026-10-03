@@ -13,6 +13,7 @@ import json
 import pytest
 
 from shelltrix import _core
+from shelltrix.events import ImageEvent, MessageEvent
 from shelltrix._core import SyncMessage, parse_sync_messages, selected_backend
 
 PAYLOAD = json.dumps(
@@ -368,5 +369,59 @@ class TestSyncStream:
         """
         import shelltrix_core
 
-        core_fields = {a for a in dir(shelltrix_core.StreamEvent) if not a.startswith("_")}
+        core_fields = {a for a in dir(shelltrix_core.Event) if not a.startswith("_")}
         assert set(_core.StreamEvent.__dataclass_fields__) == core_fields
+
+
+@needs_rust
+class TestStreamEventShapes:
+    """Turning a wire event into what the timeline renders.
+
+    `shelltrix-core` decides the `kind`; this is where a kind becomes either a
+    `MessageEvent`, an `ImageEvent`, or nothing at all. The third case is the
+    one that matters: matrix-nio gave reactions their own event class, so they
+    never reached the message handler. A transport that classifies less would
+    deliver them as empty bubbles.
+    """
+
+    @staticmethod
+    def event(**kwargs) -> _core.StreamEvent:
+        return _core.StreamEvent(**{"room_id": "!r:hs", **kwargs})
+
+    def test_a_message_becomes_a_MessageEvent(self) -> None:
+        got = self.event(
+            kind=_core.KIND_MESSAGE, sender="@alice:hs", event_id="$1", body="hi",
+            origin_server_ts=1_700_000_000_000, msgtype="m.text",
+        ).as_timeline_event()
+        assert isinstance(got, MessageEvent)
+        assert got.body == "hi" and got.event_id == "$1"
+        assert got.server_timestamp == 1_700_000_000_000
+
+    def test_an_image_becomes_an_ImageEvent(self) -> None:
+        got = self.event(
+            kind=_core.KIND_IMAGE, sender="@alice:hs", event_id="$2",
+            body="cat.png", url="mxc://hs/abc",
+        ).as_timeline_event()
+        assert isinstance(got, ImageEvent)
+        assert got.url == "mxc://hs/abc" and got.body == "cat.png"
+
+    @pytest.mark.parametrize(
+        "kind,extra",
+        [
+            (_core.KIND_REACTION, {"target": "$1", "key": "\N{THUMBS UP SIGN}"}),
+            (_core.KIND_TYPING, {"users": ("@bob:hs",)}),
+            (_core.KIND_INVITE, {"sender": "@bob:hs"}),
+        ],
+    )
+    def test_a_non_message_is_not_a_timeline_entry(self, kind: str, extra: dict) -> None:
+        """They have their own handlers; rendering them would be a blank line."""
+        assert self.event(kind=kind, **extra).as_timeline_event() is None
+
+    def test_an_unknown_kind_is_ignored_rather_than_guessed(self) -> None:
+        """A kind this shelltrix does not know must not reach the timeline."""
+        assert self.event(kind="m.room.topic", body="new topic").as_timeline_event() is None
+
+    def test_a_missing_timestamp_is_absent_rather_than_zero(self) -> None:
+        """0 would render as 1970 in the message list."""
+        got = self.event(kind=_core.KIND_MESSAGE, body="x").as_timeline_event()
+        assert got.server_timestamp is None

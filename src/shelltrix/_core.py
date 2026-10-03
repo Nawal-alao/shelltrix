@@ -23,8 +23,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass
-from typing import Final
+from dataclasses import dataclass, field
+from typing import Final, Mapping
+
+from .events import ImageEvent, MessageEvent
 
 log = logging.getLogger(__name__)
 
@@ -90,17 +92,75 @@ def login_and_sync(homeserver: str, user: str, password: str) -> SyncSummary:
     )
 
 
+# The kinds the Rust stream reports. Named here rather than in `events.py`
+# because these are transport labels: `events.py` describes what the UI shows,
+# this describes what came off the wire.
+KIND_MESSAGE: Final = "message"
+KIND_IMAGE: Final = "image"
+KIND_REACTION: Final = "reaction"
+KIND_TYPING: Final = "typing"
+KIND_INVITE: Final = "invite"
+
+
 @dataclass(frozen=True)
 class StreamEvent:
-    """One `m.room.message` from the running sync loop."""
+    """One event from the running sync loop, classified by the Rust core.
 
+    Flat and tagged with `kind`, like `/sync` itself: a message fills five of
+    the fields and leaves the rest at their defaults. `as_timeline_event`
+    reshapes the two kinds the timeline renders.
+
+    `source` is the raw event JSON, parsed back into Python here rather than
+    handed over as text. The UI reads relations from it (`m.in_reply_to` on a
+    reply), and that must keep working whatever the transport.
+    """
+
+    kind: str
     room_id: str
-    sender: str
-    origin_server_ts: int
-    event_id: str
-    msgtype: str
-    body: str
-    mentions: bool
+    sender: str = ""
+    origin_server_ts: int = 0
+    event_id: str = ""
+    msgtype: str = "m.text"
+    body: str = ""
+    mentions: bool = False
+    # Images: media URL, already resolved from `url` or `file.url`.
+    url: str = ""
+    # Reactions: the annotated event, and the emoji.
+    target: str = ""
+    key: str = ""
+    # Typing: who is typing right now.
+    users: tuple[str, ...] = ()
+    source: Mapping[str, object] = field(default_factory=dict)
+
+    def as_timeline_event(self) -> MessageEvent | ImageEvent | None:
+        """The dataclasses of `events.py`, or None if this is not rendered.
+
+        Only messages and images become timeline entries. Reactions, typing and
+        invites have their own handlers, so returning None for them here is
+        what keeps the UI from rendering a reaction as an empty bubble —
+        which is exactly what reading messages without classifying does.
+        """
+        if self.kind == KIND_MESSAGE:
+            return MessageEvent(
+                room_id=self.room_id,
+                sender=self.sender,
+                body=self.body,
+                event_id=self.event_id,
+                server_timestamp=self.origin_server_ts or None,
+                msgtype=self.msgtype,
+                source=self.source,
+            )
+        if self.kind == KIND_IMAGE:
+            return ImageEvent(
+                room_id=self.room_id,
+                sender=self.sender,
+                body=self.body,
+                event_id=self.event_id,
+                server_timestamp=self.origin_server_ts or None,
+                url=self.url,
+                source=self.source,
+            )
+        return None
 
 
 def start_sync(homeserver: str, user: str, password: str) -> SyncSummary:
@@ -120,6 +180,24 @@ def start_sync(homeserver: str, user: str, password: str) -> SyncSummary:
     )
 
 
+def _to_stream_event(raw) -> StreamEvent:
+    return StreamEvent(
+        kind=raw.kind,
+        room_id=raw.room_id,
+        sender=raw.sender,
+        origin_server_ts=raw.origin_server_ts,
+        event_id=raw.event_id,
+        msgtype=raw.msgtype or "m.text",
+        body=raw.body,
+        mentions=raw.mentions,
+        url=raw.url,
+        target=raw.target,
+        key=raw.key,
+        users=tuple(raw.users),
+        source=json.loads(raw.source) if raw.source else {},
+    )
+
+
 def next_event(timeout_ms: int) -> StreamEvent | None:
     """Waits up to `timeout_ms` for the next event, or None if none arrives.
 
@@ -130,17 +208,7 @@ def next_event(timeout_ms: int) -> StreamEvent | None:
     if _rust is None:
         raise RuntimeError("the Rust core is not installed (pip install shelltrix-core)")
     event = _rust.next_event(timeout_ms)
-    if event is None:
-        return None
-    return StreamEvent(
-        room_id=event.room_id,
-        sender=event.sender,
-        origin_server_ts=event.origin_server_ts,
-        event_id=event.event_id,
-        msgtype=event.msgtype,
-        body=event.body,
-        mentions=event.mentions,
-    )
+    return None if event is None else _to_stream_event(event)
 
 
 def stop_sync() -> None:

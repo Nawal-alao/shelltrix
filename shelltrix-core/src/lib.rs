@@ -22,6 +22,7 @@
 // suggested fix; there is no restructuring on our side that avoids it.
 #![recursion_limit = "512"]
 
+pub mod classify;
 pub mod runtime;
 pub mod stream;
 pub mod transport;
@@ -253,49 +254,23 @@ fn start_sync(
 /// Returns `None` when the wait expires, which is the normal outcome in a quiet
 /// room and not an error. Raises `RuntimeError` if no sync is running, or if
 /// the loop ended — with the reason, so the UI can say why it went quiet.
+///
+/// The event is [`classify::Event`], not a struct of its own: the fields are
+/// the classified ones, and a second copy here would be a translation to keep
+/// in sync. The first field added to only one side would read as an empty
+/// value in Python rather than as an error.
 #[pyfunction]
-#[pyo3(text_signature = "(timeout_ms: int) -> StreamEvent | None")]
-fn next_event(py: Python<'_>, timeout_ms: u64) -> PyResult<Option<StreamEvent>> {
+#[pyo3(text_signature = "(timeout_ms: int) -> Event | None")]
+fn next_event(py: Python<'_>, timeout_ms: u64) -> PyResult<Option<classify::Event>> {
     let got = py.detach(|| runtime::block_on(stream::next(timeout_ms)));
     let event = got.map_err(PyRuntimeError::new_err)?;
-    Ok(event.map(|e| StreamEvent {
-        room_id: e.room_id,
-        sender: e.sender,
-        origin_server_ts: e.origin_server_ts,
-        event_id: e.event_id,
-        msgtype: e.msgtype,
-        body: e.body,
-        mentions: e.mentions,
-    }))
+    Ok(event)
 }
 
 /// Stops the sync loop. Safe to call when none is running.
 #[pyfunction]
 fn stop_sync() {
     stream::stop();
-}
-
-/// One `m.room.message` from the running sync loop.
-#[pyclass(frozen, get_all, skip_from_py_object, module = "shelltrix_core")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamEvent {
-    pub room_id: String,
-    pub sender: String,
-    pub origin_server_ts: u64,
-    pub event_id: String,
-    pub msgtype: String,
-    pub body: String,
-    pub mentions: bool,
-}
-
-#[pymethods]
-impl StreamEvent {
-    fn __repr__(&self) -> String {
-        format!(
-            "StreamEvent(room_id={:?}, event_id={:?}, sender={:?})",
-            self.room_id, self.event_id, self.sender
-        )
-    }
 }
 
 /// Version of the compiled core, distinct from the shelltrix app version.
@@ -314,7 +289,7 @@ fn shelltrix_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stop_sync, m)?)?;
     m.add_class::<SyncMessage>()?;
     m.add_class::<SyncSummary>()?;
-    m.add_class::<StreamEvent>()?;
+    m.add_class::<classify::Event>()?;
     Ok(())
 }
 

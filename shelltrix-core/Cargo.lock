@@ -3134,6 +3134,7 @@ version = "0.1.0"
 dependencies = [
  "matrix-sdk",
  "pyo3",
+ "ruma",
  "serde_json",
  "tokio",
 ]
