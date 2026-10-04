@@ -420,6 +420,32 @@ class TestStoreTmpHygiene:
 
         assert fresh.exists()
 
+    def test_the_zero_byte_marker_survives_however_old(
+        self, isolated_config, fake_keyring
+    ):
+        """`.shelltrix-encrypted` is zero bytes by construction, and its
+        timestamp means nothing. `_store_candidates()` skips it because of its
+        name and remove_stale_store_tmp() because it is not a scratch file:
+        only that keeps the "store is encrypted" marker from disappearing."""
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        marker = config.STORE_ENC_MARKER
+        marker.touch()
+        assert marker.stat().st_size == 0
+        old = time.time() - config.STORE_TMP_MAX_AGE - 7200
+        os.utime(marker, (old, old))
+
+        stale = config.STORE_DIR / ".shelltrix-tmp-old"
+        stale.write_bytes(b"")
+        os.utime(stale, (old, old))
+        fresh = config.STORE_DIR / ".shelltrix-tmp-fresh"
+        fresh.write_bytes(b"")
+
+        config.ensure_store_dir()
+
+        assert marker.exists(), "the encryption marker was deleted"
+        assert not stale.exists()
+        assert fresh.exists()
+
 
 # ---------------------------------------------------------------------------
 # Recovery key: scrypt verifier, never the key itself

@@ -15,24 +15,19 @@ All notable changes to shelltrix. The format follows
 - The store grew by 33% on **every** exit, until the exit itself failed.
   `encrypt_store()` runs at shutdown, but `decrypt_store()` was skipped at
   startup, so each launch/exit cycle wrapped the store in one more Fernet
-  layer: a 120 KiB store became 1.5 GiB after 33 runs, at which point the
-  process died with an unrecoverable memory allocation failure and left a
+  layer: for example, a 120 KiB store became 1.5 GiB after 33 runs, at which
+  point the exit could fail with a memory allocation error and leave a
   zero-byte leftover file. A file that already carries a Fernet layer is now
-  detected from its first bytes and left alone; unrecognized files are left
-  untouched instead of being reported as a corrupted store.
+  detected from its first bytes and left alone.
 - Leftover `.shelltrix-tmp-*` rotation files and empty files are no longer
-  treated as store data. They used to be encrypted again on exit, and on the
-  way back they surfaced as `Invalid recovery key (wrong key or corrupted
-  store)`. Stale ones are now removed at startup.
+  treated as store data, and stale ones are removed at startup.
 
 ### Notes
 - The store is **not used by the app today**: the local E2EE store is never
   loaded, so nothing reads or writes it. Its growth came from the shutdown
   encryption alone, which is now fixed, but the existing file is not shrunk.
   Users with a large `~/.config/shelltrix/store` (gigabytes) can move it
-  aside — deleting or moving it makes shelltrix start from an empty store, at
-  the cost of the locally cached E2EE session keys, which are re-established
-  on the next encrypted conversation.
+  aside: since the store is not loaded today, this has no visible effect.
 
 
 ## [1.0.2] - 2026-10-02
