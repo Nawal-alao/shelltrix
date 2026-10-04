@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,6 +53,8 @@ B64URL_ALPHABET = frozenset(
 )
 # Prefix of the scratch file `_enc_rotate()` writes before the atomic replace.
 STORE_TMP_PREFIX = ".shelltrix-tmp-"
+# How old a scratch file must be before the next run treats it as garbage.
+STORE_TMP_MAX_AGE = 3600
 
 
 class StoreLockedError(RuntimeError):
@@ -325,22 +328,31 @@ def _store_candidates() -> list[Path]:
     ]
 
 
-def remove_stale_store_tmp() -> int:
+def remove_stale_store_tmp(max_age: int = STORE_TMP_MAX_AGE) -> int:
     """Deletes the scratch files left behind by an interrupted rotation, so a
     crashed exit does not make the next runs work on a growing store.
+
+    "Stale" means older than `max_age` seconds (1 hour by default), based on
+    the modification time. A recent file is left alone on purpose: another
+    shelltrix instance may be in the middle of its own rotation, and deleting
+    its scratch file would break the atomic replace it is about to perform.
     Returns how many files were removed."""
     if not STORE_DIR.exists():
         return 0
+    now = time.time()
     removed = 0
     for path in STORE_DIR.iterdir():
-        if path.is_file() and is_store_tmp(path):
-            try:
-                path.unlink()
-                removed += 1
-            except OSError as exc:
-                logger.warning("store: cannot remove %s (%s)", path.name, exc)
+        if not (path.is_file() and is_store_tmp(path)):
+            continue
+        try:
+            if now - path.stat().st_mtime < max_age:
+                continue
+            path.unlink()
+            removed += 1
+        except OSError as exc:
+            logger.warning("store: cannot remove %s (%s)", path.name, exc)
     if removed:
-        logger.info("store: removed %d leftover temporary file(s)", removed)
+        logger.info("store: removed %d stale temporary file(s)", removed)
     return removed
 
 

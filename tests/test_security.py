@@ -22,6 +22,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -347,6 +348,8 @@ class TestStoreTmpHygiene:
         config.STORE_DIR.mkdir(parents=True, exist_ok=True)
         stale = config.STORE_DIR / ".shelltrix-tmp-abc123"
         stale.write_bytes(b"")
+        old = time.time() - config.STORE_TMP_MAX_AGE - 60
+        os.utime(stale, (old, old))
         keep = config.STORE_DIR / "nio.db"
         keep.write_bytes(SQLITE_HEADER)
 
@@ -354,6 +357,19 @@ class TestStoreTmpHygiene:
 
         assert not stale.exists()
         assert keep.exists()
+
+    def test_a_fresh_tmp_file_survives_startup(
+        self, isolated_config, fake_keyring
+    ):
+        """Another instance may be mid-rotation: its scratch file is younger
+        than an hour and must not be deleted."""
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        fresh = config.STORE_DIR / ".shelltrix-tmp-inprogress"
+        fresh.write_bytes(b"")
+
+        config.ensure_store_dir()
+
+        assert fresh.exists()
 
 
 # ---------------------------------------------------------------------------
