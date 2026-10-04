@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import shutil
@@ -36,6 +39,19 @@ STORE_ENC_MARKER = STORE_DIR / ".shelltrix-encrypted"
 # Fallback (file mode 0600) if the system keyring is unavailable: the store
 # still ends up encrypted at rest, never leaving silent plaintext on disk.
 STORE_KEY_FILE = CONFIG_DIR / "store.key"
+
+logger = logging.getLogger(__name__)
+
+# A nio store is a SQLite database: this is its first 16 bytes.
+SQLITE_MAGIC = b"SQLite format 3\x00"
+# A Fernet token is urlsafe base64 of 0x80 || timestamp(8) || iv(16) || ...
+# The version byte is mandatory, so a few bytes are enough to recognize a file
+# that already carries a Fernet layer -- without reading the whole file.
+FTOKEN_VERSION = 0x80
+FTOKEN_MAGIC_LEN = 8
+B64URL_ALPHABET = frozenset(
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
 
 
 class StoreLockedError(RuntimeError):
@@ -267,6 +283,38 @@ def _enc_store_is_encrypted() -> bool:
     return STORE_ENC_MARKER.exists()
 
 
+def _looks_like_fernet_token(head: bytes) -> bool:
+    """Recognizes a Fernet token from its first bytes alone.
+
+    The token is base64url; its very first decoded byte is the mandatory
+    version byte 0x80. Decoding the 8 first characters covers it."""
+    if len(head) < FTOKEN_MAGIC_LEN:
+        return False
+    if not B64URL_ALPHABET.issuperset(head):
+        return False
+    try:
+        raw = base64.urlsafe_b64decode(head + b"=" * (-len(head) % 4))
+    except (ValueError, binascii.Error):
+        return False
+    return bool(raw) and raw[0] == FTOKEN_VERSION
+
+
+def store_file_kind(path: Path) -> str:
+    """Classifies a store file from its first bytes: `sqlite`, `fernet` or
+    `unknown`. Never reads more than a few bytes, whatever the file size."""
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(max(len(SQLITE_MAGIC), FTOKEN_MAGIC_LEN))
+    except OSError as exc:
+        logger.warning("store: cannot read %s (%s), left untouched", path.name, exc)
+        return "unknown"
+    if head.startswith(SQLITE_MAGIC):
+        return "sqlite"
+    if _looks_like_fernet_token(head):
+        return "fernet"
+    return "unknown"
+
+
 def _enc_rotate(file: Path, transform) -> None:
     """Replaces `file` with its transformed version, atomically."""
     with tempfile.NamedTemporaryFile(
@@ -397,6 +445,14 @@ def decrypt_store(recovery_key: str | None = None) -> None:
     ]
     try:
         for file in candidates:
+            # Only a file that already carries a Fernet layer is decryptable.
+            # Anything else is left alone rather than reported as corrupted.
+            if store_file_kind(file) != "fernet":
+                logger.warning(
+                    "store: %s is not an encrypted store file, left untouched",
+                    file.name,
+                )
+                continue
             _enc_rotate(file, fernet.decrypt)
     except InvalidToken as exc:
         raise StoreLockedError(
@@ -414,7 +470,11 @@ def encrypt_store() -> None:
 
     E2EE keys protected at rest. Only sets the marker after ALL writes.
     Raises StoreEncryptionError if no key can be persisted — better to fail
-    loudly than leave the store in plaintext without the user knowing."""
+    loudly than leave the store in plaintext without the user knowing.
+
+    A file that already carries a Fernet layer is skipped: the app does not
+    always decrypt at startup, and wrapping it again would add 33% to its
+    size on every exit, until the exit itself fails."""
     if not STORE_DIR.exists():
         return
     fernet = _store_fernet()
@@ -422,6 +482,14 @@ def encrypt_store() -> None:
         p for p in STORE_DIR.iterdir() if p.is_file() and p != STORE_ENC_MARKER
     ]
     for file in candidates:
-        _enc_rotate(file, fernet.encrypt)
+        kind = store_file_kind(file)
+        if kind == "sqlite":
+            _enc_rotate(file, fernet.encrypt)
+        elif kind == "fernet":
+            logger.info("store: %s is already encrypted, left as is", file.name)
+        else:
+            logger.warning(
+                "store: %s is not a store file, left untouched", file.name
+            )
     # Everything is encrypted: we set the marker last.
     STORE_ENC_MARKER.touch()

@@ -143,7 +143,7 @@ class TestCredentialStorage:
 class TestStoreEncryption:
     def _make_store_with_data(self) -> None:
         config.STORE_DIR.mkdir(parents=True, exist_ok=True)
-        (config.STORE_DIR / "nio.db").write_bytes(b"E2EE session keys")
+        (config.STORE_DIR / "nio.db").write_bytes(SQLITE_HEADER + b"E2EE session keys")
 
     def test_encrypt_obfuscates_then_decrypt_roundtrip(
         self, isolated_config, fake_keyring
@@ -159,7 +159,7 @@ class TestStoreEncryption:
 
         config.decrypt_store()
         assert not config.STORE_ENC_MARKER.exists()
-        assert db.read_bytes() == b"E2EE session keys"
+        assert db.read_bytes() == SQLITE_HEADER + b"E2EE session keys"
 
     def test_decrypt_without_key_raises_store_locked(
         self, isolated_config, fake_keyring
@@ -193,7 +193,88 @@ class TestStoreEncryption:
 
         config.decrypt_store(recovery_key=secret)
         assert not config.STORE_ENC_MARKER.exists()
-        assert (config.STORE_DIR / "nio.db").read_bytes() == b"E2EE session keys"
+        assert (config.STORE_DIR / "nio.db").read_bytes() == SQLITE_HEADER + b"E2EE session keys"
+
+
+# ---------------------------------------------------------------------------
+# Store encryption: never stack a new Fernet layer on an encrypted file
+# ---------------------------------------------------------------------------
+
+# A real nio store starts with the SQLite magic. The encryption tests below
+# use it so that a store file is recognizable as such.
+SQLITE_HEADER = b"SQLite format 3\x00"
+
+
+class TestStoreReEncryption:
+    """`encrypt_store()` runs on every exit while `decrypt_store()` is skipped
+    (the `olm is None` guard in `load_local_store()` returns before it), so a
+    launch/exit cycle used to wrap the store in one more Fernet layer: +33% per
+    run, 33 runs later a 120 KiB store had become 1.5 GiB."""
+
+    def _plain_store(self, name: str = "nio.db", size: int = 4096) -> Path:
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        payload = bytearray(SQLITE_HEADER)
+        payload += bytes(range(256)) * (size // 256)
+        path = config.STORE_DIR / name
+        path.write_bytes(bytes(payload[:size]))
+        return path
+
+    def test_five_cycles_keep_the_size_constant(self, isolated_config, fake_keyring):
+        db = self._plain_store()
+        original = db.read_bytes()
+
+        sizes = []
+        for _ in range(5):
+            # No decrypt_store(): load_local_store() returns before reaching it.
+            config.encrypt_store()
+            sizes.append(db.stat().st_size)
+
+        assert len(set(sizes)) == 1, f"store size changed between cycles: {sizes}"
+
+        # Exactly one layer: a single decrypt gives the original plaintext back.
+        fernet = config._store_fernet(create=False)
+        assert fernet is not None
+        assert fernet.decrypt(db.read_bytes()) == original
+
+    def test_mixed_directory_encrypts_only_the_plaintext_file(
+        self, isolated_config, fake_keyring
+    ):
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        plain = self._plain_store("plain.db")
+        original = plain.read_bytes()
+        unknown = config.STORE_DIR / "notastore.bin"
+        unknown.write_bytes(b"whatever this is")
+
+        # A file already carrying a Fernet layer, as after a previous exit.
+        fernet = config._store_fernet()
+        already = config.STORE_DIR / "already.db"
+        already.write_bytes(fernet.encrypt(b"payload" + SQLITE_HEADER))
+        already_before = already.read_bytes()
+
+        config.encrypt_store()
+
+        assert already.read_bytes() == already_before, "re-encrypted a token"
+        assert fernet.decrypt(plain.read_bytes()) == original
+        assert unknown.read_bytes() == b"whatever this is"
+
+    def test_new_plaintext_file_is_still_encrypted_after_the_marker_exists(
+        self, isolated_config, fake_keyring
+    ):
+        first = self._plain_store("first.db")
+        first_original = first.read_bytes()
+        config.encrypt_store()
+        assert config.STORE_ENC_MARKER.exists()
+        first_size = first.stat().st_size
+
+        second = self._plain_store("second.db")
+        second_original = second.read_bytes()
+
+        config.encrypt_store()
+
+        fernet = config._store_fernet(create=False)
+        assert fernet.decrypt(second.read_bytes()) == second_original
+        assert fernet.decrypt(first.read_bytes()) == first_original
+        assert first.stat().st_size == first_size, "first file was wrapped twice"
 
 
 # ---------------------------------------------------------------------------
@@ -841,7 +922,7 @@ class TestImageDownloadLimits:
 class TestStoreKeyFallback:
     def _store_with_data(self) -> None:
         config.STORE_DIR.mkdir(parents=True, exist_ok=True)
-        (config.STORE_DIR / "nio.db").write_bytes(b"E2EE session keys")
+        (config.STORE_DIR / "nio.db").write_bytes(SQLITE_HEADER + b"E2EE session keys")
 
     def test_fallback_keyfile_0600_without_keyring(self, isolated_config, monkeypatch) -> None:
         import keyring
@@ -864,7 +945,7 @@ class TestStoreKeyFallback:
         # And decryption reads back that same fallback key.
         config.decrypt_store()
         assert not config.STORE_ENC_MARKER.exists()
-        assert (config.STORE_DIR / "nio.db").read_bytes() == b"E2EE session keys"
+        assert (config.STORE_DIR / "nio.db").read_bytes() == SQLITE_HEADER + b"E2EE session keys"
 
     def test_encrypt_raises_when_no_key_can_be_persisted(
         self, isolated_config, monkeypatch
