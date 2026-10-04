@@ -278,6 +278,63 @@ class TestStoreReEncryption:
 
 
 # ---------------------------------------------------------------------------
+# Store hygiene: leftover temp files and empty files are never store data
+# ---------------------------------------------------------------------------
+
+
+class TestStoreTmpHygiene:
+    """An interrupted rotation leaves a `.shelltrix-tmp-*` file behind. It is
+    not store data: encrypting it grew the store, decrypting it raised
+    `StoreLockedError` (Fernet.decrypt(b"") -> InvalidToken)."""
+
+    def test_encrypt_store_ignores_tmp_and_empty_files(
+        self, isolated_config, fake_keyring
+    ):
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        db = config.STORE_DIR / "nio.db"
+        db.write_bytes(SQLITE_HEADER)
+        stale = config.STORE_DIR / ".shelltrix-tmp-abc123"
+        stale.write_bytes(b"")
+        empty = config.STORE_DIR / "empty.db"
+        empty.write_bytes(b"")
+
+        config.encrypt_store()
+
+        assert stale.read_bytes() == b""
+        assert empty.read_bytes() == b""
+
+    def test_decrypt_store_ignores_tmp_and_empty_files(
+        self, isolated_config, fake_keyring
+    ):
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        db = config.STORE_DIR / "nio.db"
+        db.write_bytes(SQLITE_HEADER)
+        config.encrypt_store()
+        (config.STORE_DIR / ".shelltrix-tmp-abc123").write_bytes(b"")
+        (config.STORE_DIR / "empty.db").write_bytes(b"")
+
+        # Used to raise StoreLockedError("wrong key or corrupted store").
+        config.decrypt_store()
+
+        assert not config.STORE_ENC_MARKER.exists()
+        assert db.read_bytes() == SQLITE_HEADER
+
+    def test_stale_tmp_files_are_removed_at_startup(
+        self, isolated_config, fake_keyring
+    ):
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        stale = config.STORE_DIR / ".shelltrix-tmp-abc123"
+        stale.write_bytes(b"")
+        keep = config.STORE_DIR / "nio.db"
+        keep.write_bytes(SQLITE_HEADER)
+
+        config.ensure_store_dir()
+
+        assert not stale.exists()
+        assert keep.exists()
+
+
+# ---------------------------------------------------------------------------
 # Recovery key: scrypt verifier, never the key itself
 # ---------------------------------------------------------------------------
 

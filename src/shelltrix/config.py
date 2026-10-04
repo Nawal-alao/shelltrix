@@ -52,6 +52,8 @@ FTOKEN_MAGIC_LEN = 8
 B64URL_ALPHABET = frozenset(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 )
+# Prefix of the scratch file `_enc_rotate()` writes before the atomic replace.
+STORE_TMP_PREFIX = ".shelltrix-tmp-"
 
 
 class StoreLockedError(RuntimeError):
@@ -156,6 +158,7 @@ class Credentials:
 
 def ensure_store_dir() -> Path:
     STORE_DIR.mkdir(parents=True, exist_ok=True)
+    remove_stale_store_tmp()
     return STORE_DIR
 
 
@@ -283,6 +286,11 @@ def _enc_store_is_encrypted() -> bool:
     return STORE_ENC_MARKER.exists()
 
 
+def is_store_tmp(path: Path) -> bool:
+    """True for the scratch file `_enc_rotate()` writes before replacing."""
+    return path.name.startswith(STORE_TMP_PREFIX)
+
+
 def _looks_like_fernet_token(head: bytes) -> bool:
     """Recognizes a Fernet token from its first bytes alone.
 
@@ -313,6 +321,39 @@ def store_file_kind(path: Path) -> str:
     if _looks_like_fernet_token(head):
         return "fernet"
     return "unknown"
+
+
+def _store_candidates() -> list[Path]:
+    """The actual store files: no marker, no leftover scratch file, no empty
+    file. An interrupted rotation leaves a `.shelltrix-tmp-*` behind; it is
+    never store data (and Fernet.decrypt(b"") raises InvalidToken)."""
+    return [
+        p
+        for p in STORE_DIR.iterdir()
+        if p.is_file()
+        and p != STORE_ENC_MARKER
+        and not is_store_tmp(p)
+        and p.stat().st_size > 0
+    ]
+
+
+def remove_stale_store_tmp() -> int:
+    """Deletes the scratch files left behind by an interrupted rotation, so a
+    crashed exit does not make the next runs work on a growing store.
+    Returns how many files were removed."""
+    if not STORE_DIR.exists():
+        return 0
+    removed = 0
+    for path in STORE_DIR.iterdir():
+        if path.is_file() and is_store_tmp(path):
+            try:
+                path.unlink()
+                removed += 1
+            except OSError as exc:
+                logger.warning("store: cannot remove %s (%s)", path.name, exc)
+    if removed:
+        logger.info("store: removed %d leftover temporary file(s)", removed)
+    return removed
 
 
 def _enc_rotate(file: Path, transform) -> None:
@@ -438,11 +479,7 @@ def decrypt_store(recovery_key: str | None = None) -> None:
             raise StoreLockedError(
                 "Invalid recovery key (bad format). Check the characters."
             ) from exc
-    candidates = [
-        p
-        for p in STORE_DIR.iterdir()
-        if p.is_file() and p != STORE_ENC_MARKER
-    ]
+    candidates = _store_candidates()
     try:
         for file in candidates:
             # Only a file that already carries a Fernet layer is decryptable.
@@ -478,10 +515,7 @@ def encrypt_store() -> None:
     if not STORE_DIR.exists():
         return
     fernet = _store_fernet()
-    candidates = [
-        p for p in STORE_DIR.iterdir() if p.is_file() and p != STORE_ENC_MARKER
-    ]
-    for file in candidates:
+    for file in _store_candidates():
         kind = store_file_kind(file)
         if kind == "sqlite":
             _enc_rotate(file, fernet.encrypt)
