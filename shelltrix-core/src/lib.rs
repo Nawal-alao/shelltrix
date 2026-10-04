@@ -25,11 +25,20 @@
 pub mod classify;
 pub mod rooms;
 pub mod runtime;
+pub mod send;
 pub mod stream;
 pub mod transport;
 
+use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+
+create_exception!(
+    shelltrix_core,
+    EncryptedRoom,
+    pyo3::exceptions::PyException,
+    "The target room is encrypted and this core cannot encrypt what it sends."
+);
 
 /// One `m.room.message` of a `/sync` response.
 #[pyclass(frozen, get_all, skip_from_py_object, module = "shelltrix_core")]
@@ -268,6 +277,48 @@ fn next_event(py: Python<'_>, timeout_ms: u64) -> PyResult<Option<classify::Even
     Ok(event)
 }
 
+/// Posts one message-like event to a room and returns its server-assigned id.
+///
+/// `content` is JSON text rather than a Python dict, deliberately: it keeps the
+/// boundary plain data, and it means the core needs no `pyo3/serde` feature to
+/// read what Python built. The cost is one `json.dumps` next to a network round
+/// trip, which is nothing.
+///
+/// `m.room.message` covers text, emote and replies; `m.reaction` covers
+/// reactions. The core does not check which is safe — the room's encryption
+/// state decides, see [`send::leaks_plaintext`].
+///
+/// Errors:
+/// - `EncryptedRoom` if the room is encrypted. **Nothing was sent**, and the
+///   core will keep refusing until the crypto store lands: with no Olm machine,
+///   `Room::send_raw` posts plaintext under the room's nose and reports success.
+/// - `RuntimeError` if no sync is running, the room was never synced, or the
+///   homeserver refused.
+#[pyfunction]
+#[pyo3(text_signature = "(room_id: str, event_type: str, content_json: str) -> str")]
+fn send_event(
+    py: Python<'_>,
+    room_id: &str,
+    event_type: &str,
+    content_json: &str,
+) -> PyResult<String> {
+    // Parsed before the GIL is dropped: `serde_json` owns it afterwards, and
+    // holding the GIL across an await-free parse costs nothing.
+    let content = serde_json::from_str(content_json)
+        .map_err(|e| PyValueError::new_err(format!("the event content is not JSON: {e}")))?;
+    let got = py.detach(|| runtime::block_on(send::event(room_id, event_type, content)));
+    match got {
+        Ok(event_id) => Ok(event_id),
+        // The one refusal that is not a failure: it names a capability the core
+        // lacks, so Python turns it into `UnsupportedOperation` rather than
+        // telling the user their message was lost.
+        Err(send::SendError::Encrypted(room)) => Err(EncryptedRoom::new_err(format!(
+            "{room} is encrypted and this core cannot encrypt what it sends yet"
+        ))),
+        Err(e) => Err(PyRuntimeError::new_err(e.to_string())),
+    }
+}
+
 /// Stops the sync loop. Safe to call when none is running.
 #[pyfunction]
 fn stop_sync() {
@@ -349,16 +400,19 @@ fn core_version() -> &'static str {
 
 #[pymodule]
 fn shelltrix_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    let py = m.py();
     m.add_function(wrap_pyfunction!(parse_sync_messages, m)?)?;
     m.add_function(wrap_pyfunction!(core_version, m)?)?;
     m.add_function(wrap_pyfunction!(login_and_sync, m)?)?;
     m.add_function(wrap_pyfunction!(start_sync, m)?)?;
     m.add_function(wrap_pyfunction!(start_sync_with_token, m)?)?;
     m.add_function(wrap_pyfunction!(next_event, m)?)?;
+    m.add_function(wrap_pyfunction!(send_event, m)?)?;
     m.add_function(wrap_pyfunction!(stop_sync, m)?)?;
     m.add_function(wrap_pyfunction!(rooms_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(first_sync_done, m)?)?;
     m.add_function(wrap_pyfunction!(supports_e2ee, m)?)?;
+    m.add("EncryptedRoom", py.get_type::<EncryptedRoom>())?;
     m.add_class::<SyncMessage>()?;
     m.add_class::<SyncSummary>()?;
     m.add_class::<classify::Event>()?;

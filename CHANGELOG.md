@@ -25,6 +25,16 @@ All notable changes to shelltrix. The format follows
   previously had to be written twice, and nothing stopped it from being written
   once.
 
+### Added
+- **The Rust core can now send** (`SHELLTRIX_CORE=rust`): text, emote, reactions
+  and replies, through one `send_event` in the core rather than one path per kind.
+- In an encrypted room the Rust core **refuses instead of sending**. With no
+  crypto store it can only send plaintext, which matrix-sdk would post into a room
+  whose clients only accept ciphertext — a message nobody can read, and one the
+  server can. The refusal is reported as a backend limitation, not as a delivery
+  failure, so nothing is claimed to have been lost. Encrypted rooms stay
+  read-only until the Rust core gets a crypto store.
+
 ### Fixed
 - The header state flickered between "syncing" and "online" every 30 seconds on
   a healthy connection. Both sync loops set "syncing" at the top of every

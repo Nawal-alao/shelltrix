@@ -53,6 +53,24 @@ class UnsupportedOperation(NotImplementedError):
     """
 
 
+class EncryptedRoom(RuntimeError):
+    """The room is encrypted and this core cannot encrypt what it sends.
+
+    Raised *instead of* sending, and that is the whole point: a core with no
+    crypto store would otherwise post the message as plaintext into a room whose
+    clients only accept ciphertext — a message nobody can read, readable by the
+    server. matrix-sdk itself does exactly that, without complaint, when its
+    encryption feature is off, so the refusal has to happen here.
+
+    Its own type because the caller must not read it as a delivery failure: the
+    message was never at risk, the backend cannot do this. `RustTransport` turns
+    it into [`UnsupportedOperation`], which the facade reports as a missing
+    feature rather than telling the user their message was lost.
+
+    Disappears with the core, in step 5.
+    """
+
+
 def _require_rust(operation: str) -> None:
     if _rust is None:
         raise RuntimeError(
@@ -233,6 +251,34 @@ def next_event(timeout_ms: int) -> StreamEvent | None:
         _require_rust("the sync stream")
     event = _rust.next_event(timeout_ms)
     return None if event is None else _to_stream_event(event)
+
+
+def send_event(room_id: str, event_type: str, content: Mapping[str, object]) -> str:
+    """Posts one message-like event through the Rust core, and returns its id.
+
+    One call for everything the app sends: `m.room.message` with an `m.text` or
+    `m.emote` body, the `m.in_reply_to` of a reply, the `m.annotation` of a
+    reaction. The core does not inspect the content — the room decides what is
+    safe to send.
+
+    `content` is serialised here rather than in the caller, so the boundary
+    carries JSON text and the core needs no Python-object support of its own.
+
+    Blocking: it waits on the network, so callers must run it off the event loop
+    (`asyncio.to_thread`), as they already do for every other core call.
+
+    Raises:
+        EncryptedRoom: if the room is encrypted. **Nothing was sent.** The core
+            refuses rather than post plaintext where ciphertext belongs, and
+            keeps refusing until the crypto store lands.
+        RuntimeError: if no sync is running, the room was never synced, or the
+            homeserver refused.
+    """
+    _require_rust("sending")
+    try:
+        return _rust.send_event(room_id, event_type, json.dumps(content))
+    except _rust.EncryptedRoom as exc:
+        raise EncryptedRoom(str(exc)) from exc
 
 
 def stop_sync() -> None:

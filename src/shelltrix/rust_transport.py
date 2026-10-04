@@ -25,7 +25,13 @@ from . import _core
 from ._core import KIND_IMAGE, KIND_INVITE, KIND_MESSAGE, KIND_REACTION, KIND_TYPING
 from .config import Credentials
 from .events import ImageEvent, MessageEvent, Room
-from .transport import POLL_MS, EventHooks, RestartSync, Transport
+from .transport import (
+    POLL_MS,
+    EventHooks,
+    RestartSync,
+    Transport,
+    UnsupportedOperation,
+)
 
 log = logging.getLogger(__name__)
 
@@ -125,6 +131,30 @@ class RustTransport(Transport):
             )
             for room in snapshot
         }
+
+    # ------------------------------------------------------------------
+    # Sending
+    # ------------------------------------------------------------------
+    async def send_event(
+        self, room_id: str, message_type: str, content: dict, *, operation: str
+    ) -> None:
+        """Posts one event through the core, which refuses what it cannot encrypt.
+
+        The refusal is the interesting part. With no crypto store the core can
+        only ever send plaintext, so in an encrypted room it would post an
+        `m.room.message` where every client expects `m.room.encrypted`: a
+        message nobody can read, and one the server can. The core checks the
+        room's own `m.room.encryption` state and refuses before the request, so
+        `EncryptedRoom` here means nothing was sent.
+
+        It becomes `UnsupportedOperation` rather than a `SendRefused`, so the
+        facade reads it as a missing capability: the user is not told their
+        message was lost, because it never left.
+        """
+        try:
+            await asyncio.to_thread(_core.send_event, room_id, message_type, content)
+        except _core.EncryptedRoom as exc:
+            raise UnsupportedOperation(f"{operation} is not available yet: {exc}") from exc
 
     # ------------------------------------------------------------------
     # The sync loop

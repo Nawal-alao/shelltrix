@@ -138,6 +138,8 @@ Migrated so far, each step verified:
 | Room names resolved in Rust (step 3.3b) | done, `rooms_snapshot` |
 | Seam wired into `ShelltrixClient` (step 3.3c) | done, **read-only**: syncs and displays |
 | Transport contract, one door per operation (step 3.4) | done, `matrix_client` free of nio |
+| Sending text, emote, reaction, reply (step 3.5) | done, refuses in encrypted rooms |
+| 328 Python tests, 56 Rust tests | green |
 
 ## The plan — étapes 0 to 6
 
@@ -148,8 +150,8 @@ migration gates; 6 is what makes the core the default.
 | Étape | ADR step | Delivers | State |
 |---|---|---|---|
 | 0 | 3.4 | `Transport` contract, `NioTransport`, `RustTransport`, facade free of nio, one sync loop | **done** |
-| 1 | 3.5 | Sending text, emote, reaction, reply (`send_event` in Rust) | next |
-| 2 | 3.6 | History: `room_messages`, then `next_batch` | not started |
+| 1 | 3.5 | Sending text, emote, reaction, reply (`send_event` in Rust) | **done** |
+| 2 | 3.6 | History: `room_messages`, then `next_batch` | next |
 | 3 | 3.7 | Room changes: join, accept, decline, leave, `fetch_reactions` | not started |
 | 4 | 3.8 | Image upload (`media().upload()`) | not started |
 | 5 | 3.9 | E2EE: crypto store, Olm machine, key management, SAS | not started |
@@ -157,14 +159,38 @@ migration gates; 6 is what makes the core the default.
 
 Two constraints that are not obvious from the order:
 
-**Steps 1 and 4 refuse in encrypted rooms.** The core can sync an encrypted room
-and see the `m.room.encryption` state event, but it has no crypto store, so it
-cannot encrypt what it sends: a message posted to `m.room.message` in an
-encrypted room would arrive as unreadable plaintext-to-the-room, i.e. visible to
-the server and to nobody else — worse than refusing. So `RustTransport` raises
-`UnsupportedOperation` when the target room is encrypted, naming the room, and
-the test asserts **nothing was sent** rather than merely that it raised. The
-guard comes off in step 5, when the store exists.
+**Steps 1 and 4 refuse in encrypted rooms.** The core syncs an encrypted room
+and sees its `m.room.encryption` state, but it has no crypto store, so it cannot
+encrypt what it sends. Step 3.5 found this is not a precaution but a behaviour of
+the library: with `e2e-encryption` off, `Room::send_raw` posts the event as given,
+under a `trace!` that says so, and returns **success**
+(`matrix-sdk/src/room/futures.rs`). In an encrypted room that is an
+`m.room.message` where every client expects `m.room.encrypted` — a message nobody
+can read, and one the server can. So `send::event_with` reads the room's state
+before the send and returns `SendError::Encrypted`; `lib.rs` turns that into the
+core's own `EncryptedRoom`, and `RustTransport` turns *that* into
+`UnsupportedOperation`, so the facade reads a missing capability instead of
+telling the user their message was lost. Step 4 (upload) gets the same guard.
+
+Two details that are easy to get wrong:
+
+- **`EncryptionState::Unknown` refuses too.** matrix-sdk returns it when a
+  `/sync` did not carry the state. `leaks_plaintext` is written as
+  `!matches!(state, NotEncrypted)` so that an undecided room, and any state added
+  later, fail closed.
+- **The state is resolved, not merely read.** `latest_encryption_state()` asks
+  the server when the answer is unknown, so a clear room is not refused because of
+  what happened to arrive in the sync filter.
+
+The tests count HTTP requests on a mock homeserver rather than only checking the
+return value — `matrix_sdk_base::room::Room::new` is `pub(crate)`, so the only way
+to get a real encrypted room into a real store is a canned `/sync`, and that needs
+`matrix-sdk-test`. The guard comes off in step 5, when the store exists.
+
+Reactions are the one event the spec leaves unencrypted, and matrix-sdk skips
+encrypting them. The core refuses them in an encrypted room anyway: until there
+is a store, nothing in this build can encrypt anything, and the guard is a
+property of the room, not of the event name. Worth revisiting in step 5.
 
 **Step 5 is not a port, it is a dependency.** matrix-sdk's crypto support is
 behind the `e2e-encryption` feature, which this crate deliberately does not enable

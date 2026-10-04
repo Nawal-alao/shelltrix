@@ -187,6 +187,66 @@ class TestBackendSelection:
         with pytest.raises(ValueError, match="not installed"):
             parse_sync_messages(PAYLOAD, backend="rust")
 
+
+class _FakeRustModule:
+    """Stands in for the compiled module, to test the send boundary.
+
+    Not a fake of the core's behaviour — `send.rs` has its own tests against a
+    mock homeserver, where "nothing was sent" is proved by counting HTTP
+    requests. What is untestable from Rust is this side of the line: that the
+    content crosses as JSON text, and that the core's own refusal reaches the
+    transport as a type the transport can act on.
+    """
+
+    class EncryptedRoom(Exception):
+        pass
+
+    def __init__(self, *, result: str = "$1:hs", error: BaseException | None = None):
+        self.result = result
+        self.error = error
+        self.calls: list[tuple[str, str, str]] = []
+
+    def send_event(self, room_id: str, event_type: str, content_json: str) -> str:
+        self.calls.append((room_id, event_type, content_json))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+class TestSendBoundary:
+    def test_the_content_crosses_as_json_text(self, monkeypatch):
+        core = _FakeRustModule()
+        monkeypatch.setattr(_core, "_rust", core)
+
+        content = {"msgtype": "m.text", "body": "hi", "m.relates_to": {"k": 1}}
+        assert _core.send_event("!r:hs", "m.room.message", content) == "$1:hs"
+
+        (_room, event_type, payload) = core.calls[0]
+        assert event_type == "m.room.message"
+        # Text, not a dict: it is what the core parses with serde_json, and it
+        # is why the boundary needs no pyo3/serde.
+        assert isinstance(payload, str)
+        assert json.loads(payload) == content
+
+    def test_the_core_refusal_keeps_its_own_type(self, monkeypatch):
+        """The transport catches `_core.EncryptedRoom`, so the seam must raise it.
+
+        Not the core's exception object: the compiled module may not even be
+        importable, and a caller should not have to branch on which build it got.
+        """
+        core = _FakeRustModule(error=_FakeRustModule.EncryptedRoom("!r:hs is encrypted"))
+        monkeypatch.setattr(_core, "_rust", core)
+
+        with pytest.raises(_core.EncryptedRoom) as caught:
+            _core.send_event("!r:hs", "m.room.message", {"body": "secret"})
+
+        assert "!r:hs" in str(caught.value)
+
+    def test_sending_without_the_core_says_so(self, monkeypatch):
+        monkeypatch.setattr(_core, "_rust", None)
+        with pytest.raises(RuntimeError, match="Rust core"):
+            _core.send_event("!r:hs", "m.room.message", {"body": "hi"})
+
 @needs_rust
 class TestTransportBridge:
     """The GIL, which decides whether the UI can freeze.

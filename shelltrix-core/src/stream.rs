@@ -332,6 +332,19 @@ pub async fn next(timeout_ms: u64) -> Result<Option<classify::Event>, String> {
     queue.pop(timeout_ms).await
 }
 
+/// The live client, or None when no sync is running.
+///
+/// Sending needs this rather than a client of its own: matrix-sdk's send path
+/// reads the room out of the client's store, and only the loop's sync fills it.
+/// Cloning a `Client` is an `Arc` bump — the store, the keys and the push rules
+/// are shared — so this hands out a handle to the same client, not a copy of it.
+pub fn client() -> Option<Client> {
+    stream()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|state| state.client.clone()))
+}
+
 /// Stops the loop and drops the queue.
 pub fn stop() {
     if let Ok(mut slot) = stream().lock() {

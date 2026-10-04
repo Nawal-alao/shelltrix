@@ -47,6 +47,28 @@ extension-module = ["pyo3/extension-module"]
 e2e-encryption = ["matrix-sdk/e2e-encryption"]
 default = []
 
+[dev-dependencies]
+# Pinned like the runtime deps above: matrix-sdk-test builds fixtures whose
+# types must be the same `Room` and the same events the core handles, so a
+# second minor version would not compile rather than merely mismatch.
+#
+# It is here for one reason. `matrix_sdk_base::room::Room::new` is `pub(crate)`,
+# so a room can only reach a client's store through a `/sync` — and a guard that
+# refuses to send is worth nothing if the only way to test it is against a
+# homeserver nobody runs. `TestClient` replays a canned `/sync` in-process, which
+# puts a real encrypted room in a real store and lets the test count the HTTP
+# requests the send *would* have made. See `send::tests`.
+matrix-sdk-test = "=0.19.1"
+# matrix-sdk's own `test_utils`: `test_client_builder` and `set_client_session`
+# are the only way to get a logged-in client without a homeserver, and
+# `Room::new` being `pub(crate)` means there is no other way to fill a store.
+# The `testing` feature is dev-only — Cargo's resolver keeps it out of a
+# `cargo build`, so the wheel is unchanged.
+matrix-sdk = { version = "0.19", features = ["testing"] }
+# To read the mock server's request log, which is how a test proves a send never
+# happened rather than only that it returned an error.
+wiremock = { version = "0.6.5", default-features = false }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

@@ -77,6 +77,11 @@ class FakeCore:
     poll_failures: int = 0
     #: Every `next_event` call, so a test can assert the loop keeps polling.
     polls: int = 0
+    #: Every send, as `(room_id, event_type, content)`. The record is the proof
+    #: that a refusal happened before the core was asked, not after.
+    sends: list[tuple[str, str, dict]] = field(default_factory=list)
+    #: Set to an exception to make the next send fail with it.
+    send_failure: BaseException | None = None
 
     def install(self, monkeypatch) -> "FakeCore":
         for name in (
@@ -86,6 +91,7 @@ class FakeCore:
             "rooms_snapshot",
             "first_sync_done",
             "supports_e2ee",
+            "send_event",
         ):
             monkeypatch.setattr(_core, name, getattr(self, f"core_{name}"))
         monkeypatch.setattr(_core, "selected_backend", lambda: "rust")
@@ -131,6 +137,12 @@ class FakeCore:
 
     def core_supports_e2ee(self) -> bool:
         return True
+
+    def core_send_event(self, room_id: str, event_type: str, content) -> str:
+        self.sends.append((room_id, event_type, content))
+        if self.send_failure is not None:
+            raise self.send_failure
+        return "$sent:hs"
 
 
 def message(
@@ -213,14 +225,9 @@ async def test_start_creates_a_polling_task(fake_core):
 # backend while every method still reached for it. Nothing tested that path, so
 # `SHELLTRIX_CORE=rust` "worked" — right up to the first message, which raised
 # `AttributeError: 'NoneType' object has no attribute 'room_send'`.
+# Sending is *not* here: text, emote and reaction went through the core in step
+# 3.5. What is left is everything the core still reads but cannot do.
 UNSUPPORTED_CALLS = [
-    ("send_message", lambda c: c.send_message("!r:hs", "hi"), "sending a message"),
-    ("send_emote", lambda c: c.send_emote("!r:hs", "waves"), "sending an emote"),
-    (
-        "react_to",
-        lambda c: c.react_to("!r:hs", "$1", "\N{THUMBS UP SIGN}"),
-        "reacting to a message",
-    ),
     ("send_image", lambda c: c.send_image("!r:hs", IMAGE), "uploading an image"),
     ("fetch_reactions", lambda c: c.fetch_reactions("!r:hs", "$1"), "reading reactions"),
     ("part_room", lambda c: c.part_room("!r:hs"), "leaving a room"),
@@ -264,19 +271,90 @@ async def test_an_unmigrated_operation_says_so_instead_of_crashing(
 async def test_a_refused_send_is_not_reported_as_a_delivery_failure(fake_core):
     """`on_send_error` means "the server would not accept this".
 
-    Dressing a missing implementation up as a delivery failure would tell the
-    user their message was rejected when nothing was ever sent.
+    Dressing a missing capability up as a delivery failure would tell the user
+    their message was rejected when nothing was ever sent. The refusal here is
+    the encrypted-room one, so this also pins the promise: the core says no, and
+    the facade stays quiet.
     """
     reported: list[tuple[str, str]] = []
 
     async def on_send_error(room_id: str, message: str) -> None:
         reported.append((room_id, message))
 
+    fake_core.send_failure = _core.EncryptedRoom("!r:hs is encrypted")
     client = ShelltrixClient(creds=creds)
     client.on_send_error = on_send_error
     with pytest.raises(UnsupportedOperation):
         await client.send_message("!r:hs", "hi")
     assert reported == []
+
+
+@pytest.mark.asyncio
+async def test_sending_goes_through_the_core(fake_core):
+    """A message on the Rust backend reaches the core, with the content intact.
+
+    One call for text, emote and reaction, so the facade's three send paths all
+    land here. The payload is what goes on the wire, which is why the test
+    compares it whole rather than checking that *something* was sent.
+    """
+    client = ShelltrixClient(creds=creds)
+
+    await client.send_message("!r:hs", "hi")
+    await client.send_emote("!r:hs", "waves")
+    await client.react_to("!r:hs", "$1", "x")
+
+    assert fake_core.sends == [
+        ("!r:hs", "m.room.message", {"msgtype": "m.text", "body": "hi"}),
+        ("!r:hs", "m.room.message", {"msgtype": "m.emote", "body": "waves"}),
+        (
+            "!r:hs",
+            "m.reaction",
+            {
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": "$1",
+                    "key": "x",
+                }
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_carries_both_relation_forms(fake_core):
+    """A reply is the one send with a nested payload, so it is worth pinning."""
+    client = ShelltrixClient(creds=creds)
+
+    await client.send_message("!r:hs", "yes", reply_to_event_id="$7:hs")
+
+    (_room, event_type, content) = fake_core.sends[0]
+    assert event_type == "m.room.message"
+    assert content["m.relates_to"] == {
+        "rel_type": "m.in_reply_to",
+        "event_id": "$7:hs",
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_encrypted_room_refuses_before_the_core_is_asked(fake_core):
+    """The refusal must cost nothing: no send recorded, no `on_send_error`.
+
+    The core decides, on the room's `m.room.encryption` state, and the transport
+    only translates the answer. A test that could not tell those apart would
+    pass if the transport pre-empted the core — and then the rule would live in
+    two places, to be fixed in one.
+    """
+    fake_core.send_failure = _core.EncryptedRoom("!r:hs is encrypted")
+    client = ShelltrixClient(creds=creds)
+
+    with pytest.raises(UnsupportedOperation) as caught:
+        await client.send_message("!r:hs", "hi")
+
+    assert "!r:hs" in str(caught.value)
+    # The fake records before it fails, so the send *was* attempted — this test
+    # is about the core's answer being honoured, and `nothing_is_sent_to_an_
+    # encrypted_room` in Rust is the one that proves the core asked for nothing.
+    assert len(fake_core.sends) == 1
 
 
 @pytest.mark.asyncio
