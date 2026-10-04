@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import hmac
 import json
@@ -46,8 +44,14 @@ logger = logging.getLogger(__name__)
 # A Fernet token is urlsafe base64 of 0x80 || timestamp(8) || iv(16) || ...
 # The version byte is mandatory, so a few bytes are enough to recognize a file
 # that already carries a Fernet layer -- without reading the whole file.
-FTOKEN_VERSION = 0x80
-FTOKEN_MAGIC_LEN = 8
+# A Fernet token always starts with "gAAAAA", see is_fernet_token().
+FTOKEN_PREFIX = b"gAAAAA"
+# How many leading bytes are checked for the base64url alphabet.
+FTOKEN_HEAD_LEN = 64
+# Shortest possible Fernet token: 57 bytes of header, IV and HMAC, which
+# base64 rounds up to 76. Combined with the multiple-of-4 rule, the 73
+# floor effectively starts at 76.
+FTOKEN_MIN_SIZE = 73
 B64URL_ALPHABET = frozenset(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 )
@@ -295,23 +299,35 @@ def is_store_tmp(path: Path) -> bool:
 def is_fernet_token(path: Path) -> bool:
     """True when `path` already carries a Fernet layer.
 
-    A token is urlsafe base64 of 0x80 || timestamp(8) || iv(16) || ... : the
-    version byte is mandatory, so the 8 first characters are enough to tell,
-    whatever the size of the file. Only that check can be made without
-    reading the whole file."""
+    A token is urlsafe base64 of 0x80 || timestamp(8) || iv(16) || payload ||
+    HMAC(32), so all four of these hold at once:
+      - it starts with "gAAAAA": 0x80 gives the leading `g`, and the five `A`
+        cover the high zero bytes of the 8-byte big-endian timestamp, which
+        stays under 2**32 until 2106;
+      - base64 without padding means its size is a multiple of 4;
+      - 57 bytes of header, IV and HMAC is the shortest payload-free token,
+        which rounds up to 76 base64 characters;
+      - the first 64 bytes can only hold base64url characters.
+
+    The size comes from stat() and only 64 bytes are ever read, so this stays
+    cheap on a multi-gigabyte file. A plain text file that merely starts with
+    "gA" fails the size or the alphabet, and is encrypted as it should be."""
+    try:
+        st = path.stat()
+    except OSError as exc:
+        logger.warning("store: cannot stat %s (%s)", path.name, exc)
+        return False
+    if st.st_size < FTOKEN_MIN_SIZE or st.st_size % 4:
+        return False
     try:
         with path.open("rb") as fh:
-            head = fh.read(FTOKEN_MAGIC_LEN)
+            head = fh.read(FTOKEN_HEAD_LEN)
     except OSError as exc:
         logger.warning("store: cannot read %s (%s)", path.name, exc)
         return False
-    if len(head) < FTOKEN_MAGIC_LEN or not B64URL_ALPHABET.issuperset(head):
+    if not head.startswith(FTOKEN_PREFIX):
         return False
-    try:
-        raw = base64.urlsafe_b64decode(head + b"=" * (-len(head) % 4))
-    except (ValueError, binascii.Error):
-        return False
-    return bool(raw) and raw[0] == FTOKEN_VERSION
+    return B64URL_ALPHABET.issuperset(head)
 
 
 def _store_candidates() -> list[Path]:

@@ -280,6 +280,55 @@ class TestStoreReEncryption:
         assert fernet.decrypt(opaque.read_bytes()) == b"E2EE session keys"
         assert token.read_bytes() == token_before
 
+    def test_a_real_token_is_still_recognized(
+        self, isolated_config, fake_keyring
+    ):
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        fernet = config._store_fernet()
+        path = config.STORE_DIR / "nio.db"
+        path.write_bytes(fernet.encrypt(b"E2EE session keys"))
+        assert config.is_fernet_token(path)
+
+    def test_short_base64_prose_is_not_mistaken_for_a_token(
+        self, isolated_config, fake_keyring
+    ):
+        """Every byte here is base64url and it starts with the token prefix,
+        but 44 bytes is far below the shortest possible Fernet token."""
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        prose = b"gAAAAA" + b"-" * 38
+        assert len(prose) % 4 == 0 and len(prose) < config.FTOKEN_MIN_SIZE
+        path = config.STORE_DIR / "prose.txt"
+        path.write_bytes(prose)
+        assert not config.is_fernet_token(path)
+
+    def test_long_prose_with_a_space_is_not_mistaken_for_a_token(
+        self, isolated_config, fake_keyring
+    ):
+        """Long enough and correctly sized, but prose has a space in its
+        first 64 bytes, where a token only holds base64url."""
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        prose = b"gAAAAA" + b"-" * 50 + b" not a token" + b"-" * 8
+        assert len(prose) % 4 == 0 and len(prose) >= config.FTOKEN_MIN_SIZE
+        assert not config.B64URL_ALPHABET.issuperset(prose[:64])
+        path = config.STORE_DIR / "prose.txt"
+        path.write_bytes(prose)
+        assert not config.is_fernet_token(path)
+
+    def test_plaintext_starting_with_ga_is_encrypted(
+        self, isolated_config, fake_keyring
+    ):
+        """A plain text file starting with "gA" is not a token: it must be
+        encrypted like any other store file."""
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        prose = b"gAAAAA" + b"-" * 38
+        path = config.STORE_DIR / "prose.txt"
+        path.write_bytes(prose)
+
+        config.encrypt_store()
+
+        fernet = config._store_fernet()
+        assert fernet.decrypt(path.read_bytes()) == prose
+
     def test_new_plaintext_file_is_still_encrypted_after_the_marker_exists(
         self, isolated_config, fake_keyring
     ):
