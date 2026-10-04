@@ -196,6 +196,14 @@ class TestStoreEncryption:
         assert (config.STORE_DIR / "nio.db").read_bytes() == SQLITE_HEADER + b"E2EE session keys"
 
 
+def test_store_is_isolated_from_the_real_config(tmp_path) -> None:
+    """`ShelltrixClient.stop()` calls `encrypt_store()`, so a test that merely
+    stops a client would otherwise rewrite the user's real store."""
+    assert config.STORE_DIR.is_relative_to(tmp_path)
+    assert config.STORE_ENC_MARKER.is_relative_to(tmp_path)
+    assert config.STORE_KEY_FILE.is_relative_to(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # Store encryption: never stack a new Fernet layer on an encrypted file
 # ---------------------------------------------------------------------------

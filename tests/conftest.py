@@ -23,6 +23,23 @@ def _isolate_cache_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_store_dir(tmp_path, monkeypatch):
+    """Points the store encryption paths at a temporary directory.
+
+    `config.py` derives these from `CONFIG_DIR` at import time, so each one
+    has to be patched rather than just the root.
+    """
+    from shelltrix import config
+
+    store = tmp_path / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config, "STORE_DIR", store)
+    monkeypatch.setattr(config, "STORE_ENC_MARKER", store / ".shelltrix-encrypted")
+    monkeypatch.setattr(config, "STORE_KEY_FILE", tmp_path / "config" / "store.key")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def fake_keyring(monkeypatch):
     """In-memory keyring, for all tests: no contact with the system."""
     import keyring
