@@ -143,6 +143,72 @@ async def test_start_does_not_block_on_first_sync() -> None:
 
 
 @pytest.mark.asyncio
+async def test_healthy_connection_stays_online() -> None:
+    """A healthy connection must not go back to "syncing" once it is "online".
+
+    The UI polls `sync_state` once per second (ChatScreen._tick_status), so a
+    status that goes "syncing" → "online" → "syncing" → "online" on a
+    long-polling loop flickers forever on an idle client. Every value taken by
+    the state is recorded here: after the first "online" the state must stay
+    put.
+    """
+    states: list[str] = []
+
+    class RecordingClient(ShelltrixClient):
+        @property
+        def sync_state(self) -> str:
+            return self.__dict__.get("_sync_state", "connecting")
+
+        @sync_state.setter
+        def sync_state(self, value: str) -> None:
+            self.__dict__["_sync_state"] = value
+            states.append(value)
+
+    calls = 0
+
+    async def counting_sync(**kwargs) -> object:
+        """Answers 3 syncs, then stops the loop deterministically.
+
+        The 4th call aborts the loop from inside, so the number of iterations
+        is fixed (no sleep, no busy loop).
+        """
+        nonlocal calls
+        calls += 1
+        if calls > 3:
+            raise asyncio.CancelledError
+        return object()
+
+    creds = Credentials("hs", "@u:hs", "dev", "token")
+    with patch("shelltrix.matrix_client.AsyncClient") as mock_client_cls:
+        client_inst = mock_client_cls.return_value
+        client_inst.sync = AsyncMock(side_effect=counting_sync)
+        client_inst.next_batch = "abc"
+        client_inst.add_event_callback = MagicMock()
+        client_inst.add_to_device_callback = MagicMock()
+
+        nc = RecordingClient(creds)
+        nc.load_local_store = lambda: None  # no E2EE store on disk
+        nc.start()
+
+        task = nc._sync_task
+        assert task is not None
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    # 3 successful syncs happened, so the state did reach "online".
+    assert calls == 4
+    assert "online" in states
+    # start() announces the first sync; the recording starts there (the
+    # dataclass default "connecting" is a class attribute, never assigned).
+    assert states[0] == "syncing"
+    # The invariant: once online, the state never falls back to "syncing".
+    first_online = states.index("online")
+    assert "syncing" not in states[first_online:], (
+        f"the state went back to syncing once online: {states}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_first_sync_callback_fires_once() -> None:
     """The UI callback is called after the first successful sync, only once,
     even if the following syncs succeed too."""

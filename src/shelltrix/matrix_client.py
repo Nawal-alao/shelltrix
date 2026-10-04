@@ -175,7 +175,11 @@ class ShelltrixClient:
         first_sync_done = False
         while True:
             try:
-                self.sync_state = "syncing"
+                # "syncing" announces the first sync only: re-announcing it on
+                # every iteration of a healthy long-polling loop makes the UI
+                # (which polls this state every second) flicker forever.
+                if self.sync_state != "online":
+                    self.sync_state = "syncing"
                 await self.client.sync(
                     timeout=30000,
                     full_state=next_batch is None,
