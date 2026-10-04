@@ -1,10 +1,15 @@
 """Tests for automatic reconnection (exponential backoff).
 
-Verifies the contract of ShelltrixClient's `_run_sync_forever()`: a network
-outage (a sync() that raises) must not bring the task down for good — it
-switches to the "offline"/"reconnecting" state, waits, then retries; a
-successful sync flips the state back to "online" and resets the backoff to
-zero.
+Verifies the contract of the sync loop, which lives in `transport.Transport` and
+is shared by both backends: a network outage (a long poll that raises) must not
+bring the task down for good — it switches to the "offline"/"reconnecting" state,
+waits, then retries; a successful poll flips the state back to "online" and
+resets the backoff to zero.
+
+`ShelltrixClient._run_sync_forever()` is what these drive, because that is where
+the transport is wired to the facade's state and handlers. Whether "ever
+connected" says "offline" or "reconnecting" is the loop's own bookkeeping now,
+so there is nothing to set up before a run.
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ async def test_retries_and_recovers_after_failure() -> None:
         return object()
 
     creds = Credentials("hs", "@u:hs", "dev", "token")
-    with patch("shelltrix.matrix_client.AsyncClient") as mock_client_cls:
+    with patch("shelltrix.nio_transport.AsyncClient") as mock_client_cls:
         client_inst = mock_client_cls.return_value
         client_inst.sync = AsyncMock(side_effect=flaky_sync)
         client_inst.next_batch = "abc"
@@ -43,7 +48,6 @@ async def test_retries_and_recovers_after_failure() -> None:
         client_inst.rooms = {}
 
         nc = ShelltrixClient(creds)
-        nc._ever_connected = True
 
         async def run() -> None:
             await nc._run_sync_forever()
@@ -69,14 +73,13 @@ async def test_offline_when_never_connected() -> None:
         raise ConnectionError("down")
 
     creds = Credentials("hs", "@u:hs", "dev", "token")
-    with patch("shelltrix.matrix_client.AsyncClient") as mock_client_cls:
+    with patch("shelltrix.nio_transport.AsyncClient") as mock_client_cls:
         client_inst = mock_client_cls.return_value
         client_inst.sync = AsyncMock(side_effect=always_fail)
         client_inst.add_event_callback = MagicMock()
         client_inst.add_to_device_callback = MagicMock()
 
         nc = ShelltrixClient(creds)
-        nc._ever_connected = False  # never connected
 
         # First direct call: the exception is swallowed by the loop.
         async def run() -> None:
@@ -114,7 +117,7 @@ async def test_start_does_not_block_on_first_sync() -> None:
         return object()
 
     creds = Credentials("hs", "@u:hs", "dev", "token")
-    with patch("shelltrix.matrix_client.AsyncClient") as mock_client_cls:
+    with patch("shelltrix.nio_transport.AsyncClient") as mock_client_cls:
         client_inst = mock_client_cls.return_value
         client_inst.sync = AsyncMock(side_effect=slow_sync)
         client_inst.next_batch = None  # first sync = full_state
@@ -158,7 +161,7 @@ async def test_first_sync_callback_fires_once() -> None:
 
     fired: list[int] = []
     creds = Credentials("hs", "@u:hs", "dev", "token")
-    with patch("shelltrix.matrix_client.AsyncClient") as mock_client_cls:
+    with patch("shelltrix.nio_transport.AsyncClient") as mock_client_cls:
         client_inst = mock_client_cls.return_value
         client_inst.sync = AsyncMock(side_effect=counting_sync)
         client_inst.next_batch = "tok"
@@ -193,7 +196,7 @@ async def test_ui_error_in_first_sync_does_not_kill_sync_loop() -> None:
         raise RuntimeError("render bug")
 
     creds = Credentials("hs", "@u:hs", "dev", "token")
-    with patch("shelltrix.matrix_client.AsyncClient") as mock_client_cls:
+    with patch("shelltrix.nio_transport.AsyncClient") as mock_client_cls:
         client_inst = mock_client_cls.return_value
         client_inst.sync = AsyncMock(side_effect=ok_sync)
         client_inst.next_batch = "tok"
@@ -227,7 +230,7 @@ async def test_chat_screen_populates_rooms_on_first_sync() -> None:
     from shelltrix.screens.chat import ChatScreen
 
     creds = Credentials("hs", "@u:hs", "dev", "token")
-    with patch("shelltrix.matrix_client.AsyncClient") as mock_client_cls:
+    with patch("shelltrix.nio_transport.AsyncClient") as mock_client_cls:
         client_inst = mock_client_cls.return_value
         gate = asyncio.Event()
 

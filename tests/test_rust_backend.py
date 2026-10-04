@@ -35,6 +35,9 @@ from shelltrix._core import (
 from shelltrix.config import Credentials
 from shelltrix.events import ImageEvent, MessageEvent, Room
 from shelltrix.matrix_client import ShelltrixClient
+from shelltrix.nio_transport import NioTransport
+from shelltrix.rust_transport import RustTransport
+from shelltrix.transport import Transport
 
 creds = Credentials(
     homeserver="https://hs.example",
@@ -163,13 +166,36 @@ def test_the_python_backend_still_builds_an_nio_client(monkeypatch):
     from unittest.mock import MagicMock, patch
 
     monkeypatch.setattr(_core, "selected_backend", lambda: "python")
-    with patch("shelltrix.matrix_client.AsyncClient") as cls:
+    with patch("shelltrix.nio_transport.AsyncClient") as cls:
         cls.return_value.add_event_callback = MagicMock()
         cls.return_value.add_to_device_callback = MagicMock()
         client = ShelltrixClient(creds=creds)
     assert client.backend == "python"
     assert client.client is not None
     assert client.rooms() == {}
+
+
+def test_both_backends_implement_the_same_operations():
+    """matrix-nio is the complete reference; the Rust one is a subset of it.
+
+    A method present on one transport and forgotten on the other fails silently,
+    because `Transport` supplies a default for most of them: a `rooms()` that was
+    never overridden shows up as an empty sidebar rather than as an error. The
+    operations themselves refuse loudly; only these do not.
+    """
+    contract = {
+        name
+        for name, value in vars(Transport).items()
+        if callable(value) and not name.startswith("__")
+    }
+    rust_only = {
+        name for name in contract if name in vars(RustTransport)
+    } - set(vars(NioTransport))
+    assert rust_only == set(), (
+        f"the Rust transport implements {sorted(rust_only)}, which the complete "
+        "reference does not: either the operation is not part of the contract, "
+        "or matrix-nio is missing it too"
+    )
 
 
 @pytest.mark.asyncio
@@ -309,7 +335,7 @@ def test_a_room_the_snapshot_has_not_named_yet_is_still_listed(fake_core):
     up is the lesser problem, and it resolves on the next sync.
     """
     client = ShelltrixClient(creds=creds)
-    room = client._rust_room("!late:hs")
+    room = client.transport.room("!late:hs")
     assert room.room_id == "!late:hs"
     assert room.display_name == "!late:hs"
 
@@ -391,7 +417,7 @@ async def test_a_message_reaches_the_message_handler(fake_core):
     fake_core.rooms = [RoomSnapshot(room_id="!r:hs", display_name="Planning")]
     client = ShelltrixClient(creds=creds)
     seen = Handlers().attach(client)
-    await client._dispatch_rust_event(message("hello"))
+    await client.transport.dispatch(message("hello"))
 
     assert len(seen.messages) == 1
     room, event = seen.messages[0]
@@ -404,7 +430,7 @@ async def test_a_message_reaches_the_message_handler(fake_core):
 async def test_an_image_reaches_the_image_handler(fake_core):
     client = ShelltrixClient(creds=creds)
     seen = Handlers().attach(client)
-    await client._dispatch_rust_event(
+    await client.transport.dispatch(
         StreamEvent(
             kind=KIND_IMAGE,
             room_id="!r:hs",
@@ -428,7 +454,7 @@ async def test_a_reaction_reaches_the_reaction_handler_only(fake_core):
     """
     client = ShelltrixClient(creds=creds)
     seen = Handlers().attach(client)
-    await client._dispatch_rust_event(
+    await client.transport.dispatch(
         StreamEvent(
             kind=KIND_REACTION,
             room_id="!r:hs",
@@ -446,7 +472,7 @@ async def test_a_reaction_reaches_the_reaction_handler_only(fake_core):
 async def test_typing_carries_who_is_typing(fake_core):
     client = ShelltrixClient(creds=creds)
     seen = Handlers().attach(client)
-    await client._dispatch_rust_event(
+    await client.transport.dispatch(
         StreamEvent(kind=KIND_TYPING, room_id="!r:hs", users=("@bob:hs", "@carol:hs"))
     )
     # A tuple from Rust becomes a list, because the UI's handler signature says so.
@@ -461,7 +487,7 @@ async def test_typing_that_stopped_is_announced_with_nobody(fake_core):
     """
     client = ShelltrixClient(creds=creds)
     seen = Handlers().attach(client)
-    await client._dispatch_rust_event(StreamEvent(kind=KIND_TYPING, room_id="!r:hs"))
+    await client.transport.dispatch(StreamEvent(kind=KIND_TYPING, room_id="!r:hs"))
     assert seen.typing == [("!r:hs", [])]
 
 
@@ -469,7 +495,7 @@ async def test_typing_that_stopped_is_announced_with_nobody(fake_core):
 async def test_an_invite_names_who_asked(fake_core):
     client = ShelltrixClient(creds=creds)
     seen = Handlers().attach(client)
-    await client._dispatch_rust_event(
+    await client.transport.dispatch(
         StreamEvent(kind=KIND_INVITE, room_id="!r:hs", sender="@bob:hs")
     )
     assert len(seen.invites) == 1
@@ -481,7 +507,7 @@ async def test_an_invite_names_who_asked(fake_core):
 async def test_an_event_with_no_handler_is_dropped_quietly(fake_core):
     """A user who registered no handler must not crash the sync loop."""
     client = ShelltrixClient(creds=creds)
-    await client._dispatch_rust_event(message("hello"))
+    await client.transport.dispatch(message("hello"))
 
 
 # ---------------------------------------------------------------------------

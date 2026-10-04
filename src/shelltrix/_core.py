@@ -37,11 +37,6 @@ _BACKEND_ENV: Final = "SHELLTRIX_CORE"
 _PYTHON: Final = "python"
 _RUST: Final = "rust"
 
-# How long `matrix_client`'s polling loop waits for one event before checking
-# that it is still alive. Long enough that an idle client wakes rarely, short
-# enough that a shutdown is not held up by it.
-EVENT_WAIT_MS: Final = 30_000
-
 try:  # optional, never a prerequisite
     import shelltrix_core as _rust
 except ImportError:  # pragma: no cover - depends on the machine
@@ -226,6 +221,9 @@ def _to_stream_event(raw) -> StreamEvent:
 
 def next_event(timeout_ms: int) -> StreamEvent | None:
     """Waits up to `timeout_ms` for the next event, or None if none arrives.
+
+    `timeout_ms` is how long one long poll lasts, and `transport.POLL_MS` owns
+    that number now that both backends share one loop.
 
     None is the normal outcome in a quiet room, not a failure. A `RuntimeError`
     means the loop itself ended — the message says why, so the UI can report it

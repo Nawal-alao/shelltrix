@@ -47,6 +47,12 @@ plus the ~20-line at-rest encryption block for the olm store in
 `config.py`, which travels with it. Splitting an encryption key from its store
 would be a security bug that only shows up in use.
 
+That file is now three (`transport.py`, `nio_transport.py`,
+`rust_transport.py`, see step 3.4), because "what matrix-nio looks like" and
+"what shelltrix asks of a Matrix library" stopped being the same thing the
+moment a second backend existed. The facade is 446 lines, matrix-nio behind it
+435.
+
 `cache.py` (301 lines) does **not** migrate yet. Two stores writing the same
 data diverge silently, and rewriting the UI read layer is the real risk of the
 project. The Python cache stays the single source of truth for the UI; the core
@@ -120,7 +126,7 @@ Migrated so far, each step verified:
 | Step | State |
 |---|---|
 | Packaging question | resolved, abi3 wheel proven in CI |
-| Seam (`shelltrix._core`), backend selection, parity tests | done, 323 tests |
+| Seam (`shelltrix._core`), backend selection, parity tests | done, 325 tests |
 | `/sync` parsing → timeline messages | done, 30x measured |
 | Feasibility against a real homeserver (step 3.0) | done, loop closed |
 | Transport seam: UI free of nio (step 3.1) | done, enforced by a test |
@@ -131,10 +137,54 @@ Migrated so far, each step verified:
 | Token restore instead of password login (step 3.3a) | done, `start_sync_with_token` |
 | Room names resolved in Rust (step 3.3b) | done, `rooms_snapshot` |
 | Seam wired into `ShelltrixClient` (step 3.3c) | done, **read-only**: syncs and displays |
-| Sending (messages, reactions, uploads) | **not started** |
-| Room changes (join, invite, leave), history | **not started** |
-| E2EE (olm store, key management) | **not started** |
-| Rust as the default backend | not started (still opt-in) |
+| Transport contract, one door per operation (step 3.4) | done, `matrix_client` free of nio |
+
+## The plan — étapes 0 to 6
+
+Written down so the sequence survives a session. Étapes 0 to 3 are the migration
+to *parity*; 5 is the one that is not a migration at all but a feature the
+migration gates; 6 is what makes the core the default.
+
+| Étape | ADR step | Delivers | State |
+|---|---|---|---|
+| 0 | 3.4 | `Transport` contract, `NioTransport`, `RustTransport`, facade free of nio, one sync loop | **done** |
+| 1 | 3.5 | Sending text, emote, reaction, reply (`send_event` in Rust) | next |
+| 2 | 3.6 | History: `room_messages`, then `next_batch` | not started |
+| 3 | 3.7 | Room changes: join, accept, decline, leave, `fetch_reactions` | not started |
+| 4 | 3.8 | Image upload (`media().upload()`) | not started |
+| 5 | 3.9 | E2EE: crypto store, Olm machine, key management, SAS | not started |
+| 6 | 4 | Real `logout` (token revocation), then promotion after N releases at parity → 1.5.0 | not started |
+
+Two constraints that are not obvious from the order:
+
+**Steps 1 and 4 refuse in encrypted rooms.** The core can sync an encrypted room
+and see the `m.room.encryption` state event, but it has no crypto store, so it
+cannot encrypt what it sends: a message posted to `m.room.message` in an
+encrypted room would arrive as unreadable plaintext-to-the-room, i.e. visible to
+the server and to nobody else — worse than refusing. So `RustTransport` raises
+`UnsupportedOperation` when the target room is encrypted, naming the room, and
+the test asserts **nothing was sent** rather than merely that it raised. The
+guard comes off in step 5, when the store exists.
+
+**Step 5 is not a port, it is a dependency.** matrix-sdk's crypto support is
+behind the `e2e-encryption` feature, which this crate deliberately does not enable
+by default: shipping an Olm machine with no key store and no way to verify
+anything is the worst of both. So step 5 starts by finding out what 0.19 actually
+offers — store, machine, key management, SAS — and the answer decides whether
+cross-signing lands here or the roadmap item it gates moves elsewhere.
+
+### Findings deferred to their own commit
+
+Deliberately not touched by étape 0, because each is a behaviour change and this
+step is a refactor:
+
+| Where | Finding | Why it was left |
+|---|---|---|
+| `transport.py:286` | `BLE001` blind `except Exception` in the sync loop | Intended: one long poll may fail in any way, and the backoff is the answer. Rewriting it as a narrower catch is a judgement call, not a cleanup. |
+| `matrix_client.py:164` | `S110` + `BLE001` `try`/`except`/`pass` in `_fire_first_sync` | A UI refresh error must not be mistaken for an outage. It deserves a `log.exception`, which is a behaviour change. |
+| `matrix_client.py:247,345,418` | `BLE001` in `_send`, `send_image`, `room_messages` | The facade reports any failure to the user; a narrower catch would let some failures go unreported. |
+| `nio_transport.py:298` | `BLE001` + `S110` around `client.logout()` | Same, plus the local cleanup must happen even offline. |
+| `nio_transport.py:137` | `TRY004` raise `SendRefused` after an `isinstance` check | A false positive: the refusal is the homeserver declining an upload, not a caller passing a wrong type. |
 
 ### What "wired in" means, and what it does not
 
@@ -334,6 +384,68 @@ Reconnection needed one transport-specific adjustment. matrix-nio's loop
 recovers by calling `sync()` again; the core owns its own sync task, so when its
 queue reports the loop ended the client tears it down and starts a new one. Same
 contract and same exponential backoff as the nio path, one different step.
+
+### Step 3.4 — one door per operation, and the facade closed
+
+Until now the seam existed but the facade still knew about the libraries behind
+it. `ShelltrixClient` imported nio, built the nio client, registered nio
+callbacks, and normalized nio objects — so migrating an operation meant editing
+the facade, in the middle of the class the whole UI is written against. The
+immediate symptom was `_nio(operation)`, a method whose entire job was to raise
+`UnsupportedOperation` for everything the Rust core had not done yet: every
+remaining operation would have added a branch there.
+
+`transport.py` is now that door. `Transport` declares the operations, refuses
+each one it has not implemented, and owns the one thing both backends do
+identically — keeping a `/sync` alive forever with exponential backoff.
+`nio_transport.py` is matrix-nio behind it, `rust_transport.py` is the core
+behind it, and `matrix_client.py` imports neither.
+
+Four things fell out of the split rather than being aimed at:
+
+**The refusal message stopped having to be maintained.** It used to list what
+was still missing ("sending, uploading, room changes, history…"), which was true
+when written and a lie the moment the next operation landed. It now says what
+the user was doing and how to get back to matrix-nio, and stays true.
+
+**nio's exceptions stopped crossing the boundary.** The send path translated
+`LocalProtocolError` — an encrypted room with an unverified device — into
+`SendRefused`, so the security policy is expressed in shelltrix's own terms and
+the facade can report a refusal without naming a library. The same happened to
+the upload response and to `room_messages`, which no longer has to know what a
+`RoomMessagesResponse` is.
+
+**The duplicated sync loop became one.** Two copies of the backoff loop was a
+reconnection fix applied to one backend only. The difference is now two methods:
+`_poll` (one long poll) and `_synced` (has a sync completed). The Rust one raises
+`RestartSync` after rebuilding its core, which is a reconnection and not a
+failure, so it does not pay a backoff for it.
+
+That unification found a bug on the way. Both loops set `sync_state = "syncing"`
+at the top of every iteration, so a healthy connection alternated between
+`syncing` and `online` in the header every 30 seconds — a flicker nobody sees
+because it is invisible in a screenshot. The state is now announced once, on
+entry, and afterwards the loop only reports outcomes.
+
+**The nio-free invariant now covers the facade.** `test_events.py` allowed
+`matrix_client.py` to import nio, on the grounds that it *was* the transport.
+It is not any more, and a stray `from nio import …` there would pass the old
+allowlist while quietly re-coupling every screen to the library the core
+replaces. The allowlist is now one file, `nio_transport.py`, and a second test
+asserts the facade stays outside it.
+
+What it cost: fifteen test lines, all of them `patch("shelltrix.matrix_client.
+AsyncClient")` becoming `patch("shelltrix.nio_transport.AsyncClient")`, plus the
+two tests that called a handler or a dispatch method directly and now call the
+transport's. No assertion changed. What it buys is that steps 3.5 onwards are one
+method on `RustTransport` plus a facade that already dispatches to it.
+
+`RustTransport` still implements seven of the seventeen operations: `close`,
+`rooms`, `next_batch`, `load_local_store`, `supports_e2ee`, and the two sync
+hooks. Everything else refuses by name. `test_both_backends_implement_the_same_
+operations` guards the shape of that gap — the operations refuse loudly, but a
+forgotten override of the ones with defaults (`rooms()` would read as an empty
+sidebar) is silent, and this is the test that says so.
 
 ## Consequences
 

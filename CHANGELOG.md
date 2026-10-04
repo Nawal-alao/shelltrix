@@ -6,6 +6,31 @@ All notable changes to shelltrix. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **The Matrix facade no longer knows about matrix-nio.** `ShelltrixClient` keeps
+  every method signature, and each one now dispatches through a transport
+  (`src/shelltrix/transport.py`) instead of reaching for a library client:
+  matrix-nio behind it in `nio_transport.py`, the Rust core behind it in
+  `rust_transport.py`. The seam existed but the facade still imported nio,
+  registered nio callbacks and normalized nio objects, so migrating an operation
+  meant editing the class the whole UI is written against.
+- A refused operation on the Rust backend no longer lists everything that is
+  still missing ("sending, uploading, room changes…"). That list was true when it
+  was written and a lie the moment the next operation landed; it now says what
+  the user was doing and how to get back to matrix-nio.
+- An encrypted room with an unverified device is reported as "not delivered"
+  through shelltrix's own refusal type, instead of the UI having to understand
+  matrix-nio's `LocalProtocolError`.
+- Two copies of the reconnecting sync loop became one. A fix to reconnection
+  previously had to be written twice, and nothing stopped it from being written
+  once.
+
+### Fixed
+- The header state flickered between "syncing" and "online" every 30 seconds on
+  a healthy connection. Both sync loops set "syncing" at the top of every
+  iteration; the state is now announced once, on entry, and the loop only reports
+  outcomes afterwards.
+
 ## [1.0.2] - 2026-10-02
 
 ### Fixed

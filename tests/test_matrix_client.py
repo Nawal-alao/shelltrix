@@ -45,7 +45,7 @@ def nio_room(room_id: str = "!inv:hs"):
 def make_client(**overrides: object) -> ShelltrixClient:
     """Builds a ShelltrixClient whose underlying AsyncClient is a mock."""
     creds = Credentials("hs", "@me:hs", "dev1", "token")
-    with patch("shelltrix.matrix_client.AsyncClient") as cls:
+    with patch("shelltrix.nio_transport.AsyncClient") as cls:
         inst = cls.return_value
         inst.room_send = AsyncMock()
         inst.user_id = "@me:hs"
@@ -120,7 +120,7 @@ async def test_handle_invite_for_own_user_only() -> None:
     # Not for us: different state_key → ignored
     event = MagicMock(state_key="@other:hs", sender="@inviter:hs")
     # Stand in for _handle_invite to test its body directly via the callback
-    await nc._handle_invite(room, event)
+    await nc.transport._handle_invite(room, event)
     assert nc.client.user_id == "@me:hs"
     # _handle_invite checks state_key == user_id; state_key != me → nothing
     assert fired == []
@@ -136,7 +136,7 @@ async def test_handle_invite_forwarded_for_own_user() -> None:
 
     nc.on_invite = on_invite  # type: ignore[assignment]
 
-    await nc._handle_invite(nio_room(), MagicMock(state_key="@me:hs", sender="@inviter:hs"))
+    await nc.transport._handle_invite(nio_room(), MagicMock(state_key="@me:hs", sender="@inviter:hs"))
     rid, room, inviter = fired[0]
     assert (rid, inviter) == ("!inv:hs", "@inviter:hs")
     # The UI is handed a normalized Room, never the nio object: this is the
@@ -157,7 +157,7 @@ async def test_handle_typing_forwards() -> None:
     nc.on_typing = on_typing  # type: ignore[assignment]
     room = MagicMock(room_id="!r:hs")
     event = MagicMock(users=["@a:hs", "@b:hs"])
-    await nc._handle_typing(room, event)
+    await nc.transport._handle_typing(room, event)
     assert seen == [("!r:hs", ["@a:hs", "@b:hs"])]
 
 
@@ -172,7 +172,7 @@ async def test_handle_message_forwards() -> None:
     nc.on_message = on_message  # type: ignore[assignment]
     room = MagicMock()
     event = MagicMock()
-    await nc._handle_message(room, event)
+    await nc.transport._handle_message(room, event)
     assert len(seen) == 1
 
 

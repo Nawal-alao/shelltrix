@@ -2,12 +2,13 @@
 
 Two jobs here:
 
-1. The boundary (`matrix_client._to_room` and friends) must normalize exactly
+1. The boundary (`nio_transport._to_room` and friends) must normalize exactly
    what matrix-nio resolved, because the UI now depends on that output instead
    of on nio. A drift would silently change every displayed name.
-2. Nothing above the transport may import nio anymore. That invariant is what
-   makes swapping matrix-nio for the Rust core a contained change, so it is
-   enforced by a test rather than left to memory.
+2. Nothing above the transport may import nio anymore — `matrix_client.py`
+   included, since the facade is what the whole UI is written against. That
+   invariant is what makes swapping matrix-nio for the Rust core a contained
+   change, so it is enforced by a test rather than left to memory.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from nio import MatrixRoom, MatrixUser
 from nio import RoomMessageImage
 
 from shelltrix.events import Room
-from shelltrix.matrix_client import _image_url, _to_room
+from shelltrix.nio_transport import _image_url, _to_room
 
 
 def _image_event(content: dict, url: str = "") -> RoomMessageImage:
@@ -115,8 +116,9 @@ def test_image_url_is_empty_when_the_event_carries_none() -> None:
 # The architectural invariant
 # ---------------------------------------------------------------------------
 
-# The transport layer is allowed to know about nio; nothing above it is.
-TRANSPORT_MODULES = {"matrix_client.py"}
+# The transport layer is allowed to know about nio; nothing above it is. One
+# file holds it: `nio_transport`, which is matrix-nio behind the contract.
+TRANSPORT_MODULES = {"nio_transport.py"}
 
 
 def _imports_nio(path: pathlib.Path) -> bool:
@@ -135,7 +137,7 @@ def test_no_module_above_the_transport_imports_nio() -> None:
 
     shelltrix-events are the contract between the UI and whatever transport
     speaks Matrix. As long as this holds, replacing matrix-nio with the Rust
-    core touches `matrix_client.py` only — which is the entire point of
+    core touches `nio_transport.py` only — which is the entire point of
     routing the migration through a seam.
     """
     offenders = [
@@ -151,7 +153,14 @@ def test_no_module_above_the_transport_imports_nio() -> None:
 
 def test_the_transport_is_the_only_module_allowed_to_know_nio() -> None:
     """Sanity check on the invariant above: the allowance is not vacuous."""
-    assert _imports_nio(PKG / "matrix_client.py") is True
+    assert _imports_nio(PKG / "nio_transport.py") is True
+
+
+def test_the_facade_itself_is_free_of_nio() -> None:
+    """`matrix_client` is what the whole UI is written against, so it is the one
+    module where a stray `from nio import ...` would pass the test above while
+    quietly re-coupling every screen to the library the core replaces."""
+    assert _imports_nio(PKG / "matrix_client.py") is False
 
 
 def test_room_exposes_only_what_the_ui_uses() -> None:
