@@ -42,8 +42,6 @@ STORE_KEY_FILE = CONFIG_DIR / "store.key"
 
 logger = logging.getLogger(__name__)
 
-# A nio store is a SQLite database: this is its first 16 bytes.
-SQLITE_MAGIC = b"SQLite format 3\x00"
 # A Fernet token is urlsafe base64 of 0x80 || timestamp(8) || iv(16) || ...
 # The version byte is mandatory, so a few bytes are enough to recognize a file
 # that already carries a Fernet layer -- without reading the whole file.
@@ -291,36 +289,26 @@ def is_store_tmp(path: Path) -> bool:
     return path.name.startswith(STORE_TMP_PREFIX)
 
 
-def _looks_like_fernet_token(head: bytes) -> bool:
-    """Recognizes a Fernet token from its first bytes alone.
+def is_fernet_token(path: Path) -> bool:
+    """True when `path` already carries a Fernet layer.
 
-    The token is base64url; its very first decoded byte is the mandatory
-    version byte 0x80. Decoding the 8 first characters covers it."""
-    if len(head) < FTOKEN_MAGIC_LEN:
+    A token is urlsafe base64 of 0x80 || timestamp(8) || iv(16) || ... : the
+    version byte is mandatory, so the 8 first characters are enough to tell,
+    whatever the size of the file. Only that check can be made without
+    reading the whole file."""
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(FTOKEN_MAGIC_LEN)
+    except OSError as exc:
+        logger.warning("store: cannot read %s (%s)", path.name, exc)
         return False
-    if not B64URL_ALPHABET.issuperset(head):
+    if len(head) < FTOKEN_MAGIC_LEN or not B64URL_ALPHABET.issuperset(head):
         return False
     try:
         raw = base64.urlsafe_b64decode(head + b"=" * (-len(head) % 4))
     except (ValueError, binascii.Error):
         return False
     return bool(raw) and raw[0] == FTOKEN_VERSION
-
-
-def store_file_kind(path: Path) -> str:
-    """Classifies a store file from its first bytes: `sqlite`, `fernet` or
-    `unknown`. Never reads more than a few bytes, whatever the file size."""
-    try:
-        with path.open("rb") as fh:
-            head = fh.read(max(len(SQLITE_MAGIC), FTOKEN_MAGIC_LEN))
-    except OSError as exc:
-        logger.warning("store: cannot read %s (%s), left untouched", path.name, exc)
-        return "unknown"
-    if head.startswith(SQLITE_MAGIC):
-        return "sqlite"
-    if _looks_like_fernet_token(head):
-        return "fernet"
-    return "unknown"
 
 
 def _store_candidates() -> list[Path]:
@@ -484,7 +472,7 @@ def decrypt_store(recovery_key: str | None = None) -> None:
         for file in candidates:
             # Only a file that already carries a Fernet layer is decryptable.
             # Anything else is left alone rather than reported as corrupted.
-            if store_file_kind(file) != "fernet":
+            if not is_fernet_token(file):
                 logger.warning(
                     "store: %s is not an encrypted store file, left untouched",
                     file.name,
@@ -509,21 +497,19 @@ def encrypt_store() -> None:
     Raises StoreEncryptionError if no key can be persisted — better to fail
     loudly than leave the store in plaintext without the user knowing.
 
-    A file that already carries a Fernet layer is skipped: the app does not
-    always decrypt at startup, and wrapping it again would add 33% to its
-    size on every exit, until the exit itself fails."""
+    A file that already carries a Fernet layer is skipped, every other file
+    is encrypted: the app does not always decrypt at startup, and wrapping an
+    encrypted file again would add 33% to its size on every exit, until the
+    exit itself fails."""
     if not STORE_DIR.exists():
         return
     fernet = _store_fernet()
     for file in _store_candidates():
-        kind = store_file_kind(file)
-        if kind == "sqlite":
-            _enc_rotate(file, fernet.encrypt)
-        elif kind == "fernet":
+        # Only a file that already carries a Fernet layer is skipped: any
+        # other file is encrypted, as it always was.
+        if is_fernet_token(file):
             logger.info("store: %s is already encrypted, left as is", file.name)
-        else:
-            logger.warning(
-                "store: %s is not a store file, left untouched", file.name
-            )
+            continue
+        _enc_rotate(file, fernet.encrypt)
     # Everything is encrypted: we set the marker last.
     STORE_ENC_MARKER.touch()

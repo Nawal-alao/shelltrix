@@ -143,7 +143,7 @@ class TestCredentialStorage:
 class TestStoreEncryption:
     def _make_store_with_data(self) -> None:
         config.STORE_DIR.mkdir(parents=True, exist_ok=True)
-        (config.STORE_DIR / "nio.db").write_bytes(SQLITE_HEADER + b"E2EE session keys")
+        (config.STORE_DIR / "nio.db").write_bytes(b"E2EE session keys")
 
     def test_encrypt_obfuscates_then_decrypt_roundtrip(
         self, isolated_config, fake_keyring
@@ -159,7 +159,7 @@ class TestStoreEncryption:
 
         config.decrypt_store()
         assert not config.STORE_ENC_MARKER.exists()
-        assert db.read_bytes() == SQLITE_HEADER + b"E2EE session keys"
+        assert db.read_bytes() == b"E2EE session keys"
 
     def test_decrypt_without_key_raises_store_locked(
         self, isolated_config, fake_keyring
@@ -193,7 +193,7 @@ class TestStoreEncryption:
 
         config.decrypt_store(recovery_key=secret)
         assert not config.STORE_ENC_MARKER.exists()
-        assert (config.STORE_DIR / "nio.db").read_bytes() == SQLITE_HEADER + b"E2EE session keys"
+        assert (config.STORE_DIR / "nio.db").read_bytes() == b"E2EE session keys"
 
 
 def test_store_is_isolated_from_the_real_config(tmp_path) -> None:
@@ -250,8 +250,6 @@ class TestStoreReEncryption:
         config.STORE_DIR.mkdir(parents=True, exist_ok=True)
         plain = self._plain_store("plain.db")
         original = plain.read_bytes()
-        unknown = config.STORE_DIR / "notastore.bin"
-        unknown.write_bytes(b"whatever this is")
 
         # A file already carrying a Fernet layer, as after a previous exit.
         fernet = config._store_fernet()
@@ -263,7 +261,23 @@ class TestStoreReEncryption:
 
         assert already.read_bytes() == already_before, "re-encrypted a token"
         assert fernet.decrypt(plain.read_bytes()) == original
-        assert unknown.read_bytes() == b"whatever this is"
+
+    def test_non_sqlite_plaintext_is_encrypted_and_a_token_is_left_alone(
+        self, isolated_config, fake_keyring
+    ):
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        opaque = config.STORE_DIR / "opaque.bin"
+        opaque.write_bytes(b"E2EE session keys")
+        fernet = config._store_fernet()
+        token = config.STORE_DIR / "token.db"
+        token.write_bytes(fernet.encrypt(b"payload"))
+        token_before = token.read_bytes()
+
+        config.encrypt_store()
+
+        # Not a SQLite file, no base64url header: encrypted all the same.
+        assert fernet.decrypt(opaque.read_bytes()) == b"E2EE session keys"
+        assert token.read_bytes() == token_before
 
     def test_new_plaintext_file_is_still_encrypted_after_the_marker_exists(
         self, isolated_config, fake_keyring
@@ -987,7 +1001,7 @@ class TestImageDownloadLimits:
 class TestStoreKeyFallback:
     def _store_with_data(self) -> None:
         config.STORE_DIR.mkdir(parents=True, exist_ok=True)
-        (config.STORE_DIR / "nio.db").write_bytes(SQLITE_HEADER + b"E2EE session keys")
+        (config.STORE_DIR / "nio.db").write_bytes(b"E2EE session keys")
 
     def test_fallback_keyfile_0600_without_keyring(self, isolated_config, monkeypatch) -> None:
         import keyring
@@ -1010,7 +1024,7 @@ class TestStoreKeyFallback:
         # And decryption reads back that same fallback key.
         config.decrypt_store()
         assert not config.STORE_ENC_MARKER.exists()
-        assert (config.STORE_DIR / "nio.db").read_bytes() == SQLITE_HEADER + b"E2EE session keys"
+        assert (config.STORE_DIR / "nio.db").read_bytes() == b"E2EE session keys"
 
     def test_encrypt_raises_when_no_key_can_be_persisted(
         self, isolated_config, monkeypatch
